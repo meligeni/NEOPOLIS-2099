@@ -118,7 +118,6 @@ interface StoryNPCWalker {
 // PROCEDURAL GENERATION ENGINE (BSP Tree & PRNG)
 // ============================================================================
 
-// Semente de Geração (Pseudo-Random Number Generator) baseado no nome do Personagem
 const createPRNG = (seedStr: string) => {
   let h = 0xdeadbeef;
   for (let i = 0; i < seedStr.length; i++) h = Math.imul(h ^ seedStr.charCodeAt(i), 2654435761);
@@ -129,11 +128,10 @@ const createPRNG = (seedStr: string) => {
   };
 };
 
-// Estruturas de Dados Procedurais
 interface CityLot { x: number; y: number; w: number; h: number; cx: number; cy: number; type: string; color?: string; }
 interface CityInteractable { x: number; y: number; id: string; type: string; label: string; actionData?: any; }
 interface CityMap {
-  tiles: number[][]; // 0=road, 1=crosswalk, 2=sidewalk, 3=alley, 10+=lots
+  tiles: number[][]; 
   buildings: CityLot[];
   interactables: CityInteractable[];
   props: { x: number; y: number; type: string; color?: string }[];
@@ -144,10 +142,9 @@ const TOWN_SIZE = 46;
 
 function generateProceduralCity(seed: string): CityMap {
   const rng = createPRNG(seed);
-  const tiles: number[][] = Array(TOWN_SIZE).fill(0).map(() => Array(TOWN_SIZE).fill(2)); // Default: Sidewalk(2)
+  const tiles: number[][] = Array(TOWN_SIZE).fill(0).map(() => Array(TOWN_SIZE).fill(2));
   const validWalkTiles: { x: number; y: number }[] = [];
   
-  // Ancorar a Autoestrada Central (Mantém o tráfego a funcionar)
   for (let x = 0; x < TOWN_SIZE; x++) {
     for (let y = 0; y < TOWN_SIZE; y++) {
       const isAvenue = x >= 21 && x <= 24;
@@ -162,7 +159,6 @@ function generateProceduralCity(seed: string): CityMap {
     }
   }
 
-  // Divisão Espacial Binária (BSP) para os 4 Quadrantes
   const getLots = (x: number, y: number, w: number, h: number): any[] => {
     if (w < 13 && h < 13) return [{ x, y, w, h }];
     let splitHoriz = rng() > 0.5;
@@ -172,7 +168,7 @@ function generateProceduralCity(seed: string): CityMap {
     if (splitHoriz) {
       let splitY = Math.floor(rng() * (h - 10)) + 5;
       let t = getLots(x, y, w, splitY);
-      let b = getLots(x, y + splitY + 2, w, h - splitY - 2); // +2 creates the alleyway
+      let b = getLots(x, y + splitY + 2, w, h - splitY - 2);
       return [...t, ...b];
     } else {
       let splitX = Math.floor(rng() * (w - 10)) + 5;
@@ -188,7 +184,6 @@ function generateProceduralCity(seed: string): CityMap {
   const q4Lots = getLots(27, 27, 17, 17);
   const allLots = [...q1Lots, ...q2Lots, ...q3Lots, ...q4Lots];
 
-  // Distribuir os Edifícios Únicos
   const uniqueFeatures = [
     { type: 'ramen', id: 'ramen_bistro', label: "Entrar: Bistrô de Ramen do Chef Bao", color: '#ef4444' },
     { type: 'clinic', id: 'ripperdoc_clinic', label: "Entrar: Clínica Ripperdoc do Dex", color: '#06b6d4' },
@@ -208,7 +203,6 @@ function generateProceduralCity(seed: string): CityMap {
     { type: 'lecture', id: 'lecture', label: "Attend AI Holo-Lecture (+50 CR)", color: '#00f0ff' }
   ];
 
-  // Baralhar (Fisher-Yates via PRNG)
   for (let i = uniqueFeatures.length - 1; i > 0; i--) {
     const j = Math.floor(rng() * (i + 1));
     [uniqueFeatures[i], uniqueFeatures[j]] = [uniqueFeatures[j], uniqueFeatures[i]];
@@ -219,7 +213,6 @@ function generateProceduralCity(seed: string): CityMap {
   const props: { x: number; y: number; type: string; color?: string }[] = [];
 
   allLots.forEach(lot => {
-    // Marcar Tiles do Lote
     for (let lx = lot.x; lx < lot.x + lot.w; lx++) {
       for (let ly = lot.y; ly < lot.y + lot.h; ly++) tiles[lx][ly] = 10;
     }
@@ -234,18 +227,15 @@ function generateProceduralCity(seed: string): CityMap {
     }
   });
 
-  // Detetar Vielas e Passeios para adereços
   const lampColors = ['#00f0ff', '#ff2a85', '#f59e0b', '#a855f7'];
   for (let x = 2; x < TOWN_SIZE - 2; x++) {
     for (let y = 2; y < TOWN_SIZE - 2; y++) {
       if (tiles[x][y] === 2) {
-        // Detectar se é uma Viela (Rodeado de lotes 10)
         const isAlley = tiles[x-1][y] === 10 && tiles[x+1][y] === 10 || tiles[x][y-1] === 10 && tiles[x][y+1] === 10;
         if (isAlley) tiles[x][y] = 3;
         
         validWalkTiles.push({ x, y });
 
-        // Espalhar Props proceduralmente
         if (tiles[x][y] === 3 && rng() < 0.04) {
           props.push({ x, y, type: 'steam' });
         } else if (tiles[x][y] === 2 && rng() < 0.02) {
@@ -260,13 +250,16 @@ function generateProceduralCity(seed: string): CityMap {
     }
   }
 
-  // Colocar Drone Aleatório e Signpost
   const walkTile1 = validWalkTiles[Math.floor(rng() * validWalkTiles.length)];
-  interactables.push({ x: walkTile1.x, y: walkTile1.y, id: 'repair', type: 'repair', label: "Reparar Drone (-15⚡)" });
-  props.push({ x: walkTile1.x, y: walkTile1.y, type: 'drone' });
+  if (walkTile1) {
+    interactables.push({ x: walkTile1.x, y: walkTile1.y, id: 'repair', type: 'repair', label: "Reparar Drone (-15⚡)" });
+    props.push({ x: walkTile1.x, y: walkTile1.y, type: 'drone' });
+  }
 
   const walkTile2 = validWalkTiles[Math.floor(rng() * validWalkTiles.length)];
-  props.push({ x: walkTile2.x, y: walkTile2.y, type: 'signpost' });
+  if (walkTile2) {
+    props.push({ x: walkTile2.x, y: walkTile2.y, type: 'signpost' });
+  }
 
   return { tiles, buildings, interactables, props, validWalkTiles };
 }
@@ -278,17 +271,14 @@ function generateProceduralCity(seed: string): CityMap {
 export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   
-  // 1. REF DE PROPS: Mantém o GameLoop sempre atualizado sem re-renderizar o Canvas
   const propsRef = useRef(props);
   useEffect(() => {
     propsRef.current = props;
   }, [props]);
 
-  // 2. Geração da Cidade Procedural em Memória (Memoizada pela Semente)
   const seed = props.gameState?.player?.name || 'Neopolis';
   const cityMap = useMemo(() => generateProceduralCity(seed), [seed]);
 
-  // 3. ESTADO DO JOGO EM REFS: Evita o Virtual DOM
   const playerRef = useRef({
     x: props.gameState?.currentScene === 'town' ? 10 : 3,
     y: props.gameState?.currentScene === 'town' ? 10 : 3,
@@ -306,7 +296,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
   const mouseIsoRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const keysPressed = useRef<Set<string>>(new Set());
 
-  // Física e Tempo
   const lastTimeRef = useRef<number>(0);
   const tickRef = useRef<number>(0);
   
@@ -317,7 +306,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
   const storyNPCWalkersRef = useRef<Record<string, StoryNPCWalker>>({});
 
-  // Veículos - Tráfego da Cruz Central (Mantém-se ancorado para não quebrar a lógica)
   const trafficVehiclesRef = useRef<TrafficCar[]>([
     { id: 't1', lane: 'avenue_south', x: 21.5, y: 2, speed: 0.11, type: 'taxi', dir: 'SE' },
     { id: 't2', lane: 'avenue_south', x: 21.5, y: 22, speed: 0.14, type: 'speeder', dir: 'SE' },
@@ -329,13 +317,11 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
     { id: 't8', lane: 'boulevard_west', x: 18, y: 23.5, speed: 0.12, type: 'patrol', dir: 'NE' },
   ]);
 
-  // Peões Procedurais - A sua localização inicial baseia-se nos passeios gerados (validWalkTiles)
   const citizensRef = useRef<CitizenWalker[]>([]);
   useEffect(() => {
     const rng = createPRNG(seed + "_citizens");
     const getWalkTile = () => cityMap.validWalkTiles[Math.floor(rng() * cityMap.validWalkTiles.length)] || { x: 10, y: 10 };
     
-    // Nomes e Aparências Base
     const baseCits = [
       { name: 'Cipher', gender: 'neutral', origin: 'netrunner', hairColor: '#00f0ff', outfitColor: '#1e1b4b', greeting: 'Cipher: "Watch the crosswalks!"' },
       { name: 'Kira', gender: 'fem', origin: 'courier', hairColor: '#ff2a85', outfitColor: '#f43f5e', greeting: 'Kira: "Best fuel in District 1!"' },
@@ -377,7 +363,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
     });
   }, []);
 
-  // Controlos de Teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
@@ -396,9 +381,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
     return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
   }, []);
 
-  // ============================================================================
-  // MAIN ANIMATION LOOP (Blindado e Otimizado para Procedural)
-  // ============================================================================
   useEffect(() => {
     let animId: number;
     const canvas = canvasRef.current;
@@ -426,7 +408,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
         const currentHouse = gameState.houses?.find(h => h.id === gameState.currentHouseId) || gameState.houses?.[0];
 
-        // Partículas Clima
         floatingTextsRef.current = floatingTextsRef.current.filter(t => now - t.createdAt < 1800);
 
         if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
@@ -446,7 +427,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           }
         } else { lightningFlashRef.current = 0; }
 
-        // 1. Processamento de Movimento
         let dx = 0; let dy = 0; const speed = 0.085 * timeScale;
         if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) { dx -= speed; dy -= speed; }
         if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) { dx += speed; dy += speed; }
@@ -479,7 +459,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           playerRef.current.x = nextX; playerRef.current.y = nextY;
         }
 
-        // 2. Camera Tracking
         const playerScreen = {
           x: (playerRef.current.x - playerRef.current.y) * (TILE_WIDTH / 2),
           y: (playerRef.current.x + playerRef.current.y) * (TILE_HEIGHT / 2),
@@ -487,7 +466,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * (0.1 * timeScale);
         cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * (0.1 * timeScale);
 
-        // 3. Setup de Renderização Base
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         const atmosphere = getWeatherAtmosphere(gameState.weather, gameState.timeHour);
         const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -507,7 +485,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           ctx.globalAlpha = 1.0;
         }
 
-        // 4. Lógica de Tráfego e Peões
         let trafficState: TrafficLightState = 'avenue_green';
         if (gameState.currentScene === 'town') {
           const trafficSec = (now / 1000) % 16;
@@ -594,7 +571,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           });
         }
 
-        // 5. Renderização do Chão (Baseada no Mapa Procedural)
         if (gameState.currentScene === 'town') {
           for (let x = 0; x < TOWN_SIZE; x++) {
             for (let y = 0; y < TOWN_SIZE; y++) {
@@ -607,17 +583,17 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
               if (gameState.weather === 'acid_fog') { fillColor = '#0d1611'; strokeColor = 'rgba(163, 230, 53, 0.16)'; } 
               else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') { fillColor = '#080d1a'; strokeColor = 'rgba(0, 240, 255, 0.2)'; }
 
-              if (tileType === 0) { // Road
+              if (tileType === 0) { 
                 fillColor = '#080c18'; strokeColor = 'rgba(30, 41, 59, 0.35)';
                 drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
                 if ((x === 22 || x === 23) && y % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.35)', '#00f0ff');
                 else if ((y === 22 || y === 23) && x % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(245, 158, 11, 0.35)', '#f59e0b');
-              } else if (tileType === 1) { // Crosswalk
+              } else if (tileType === 1) { 
                 drawIsoTile(ctx, screen.x, screen.y, '#080c18', 'rgba(30, 41, 59, 0.35)');
                 if ((x + y) % 2 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
               } else {
-                if (tileType === 3) { fillColor = '#0f172a'; strokeColor = 'rgba(168, 85, 247, 0.15)'; } // Alley
-                else if (tileType >= 10) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.15)'; } // Lots
+                if (tileType === 3) { fillColor = '#0f172a'; strokeColor = 'rgba(168, 85, 247, 0.15)'; } 
+                else if (tileType >= 10) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.15)'; } 
                 
                 drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
                 if ((gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') && (x + y) % 4 === 0) {
@@ -658,13 +634,11 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           }
         }
 
-        // 6. Depth Sorted Render Queue
         interface DepthItem { depth: number; draw: () => void; }
         const renderQueue: DepthItem[] = [];
 
         if (gameState.currentScene === 'town') {
           
-          // Render Procedural Buildings
           cityMap.buildings.forEach(b => {
             renderQueue.push({
               depth: b.cx + b.cy,
@@ -685,7 +659,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
             });
           });
 
-          // Render Procedural Props (Benches, Lamps, Trees, Vending)
           cityMap.props.forEach(p => {
             renderQueue.push({
               depth: p.x + p.y,
@@ -704,11 +677,9 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
             });
           });
 
-          // Elementos Fixos Decorativos
           renderQueue.push({ depth: 9 + 28, draw: () => { const s = isoToScreen(9, 28, cameraRef.current, canvas.width, canvas.height); drawPedestrianSkybridge(ctx, s.x, s.y, tick, 1); } });
           renderQueue.push({ depth: 42 + 32, draw: () => { const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height); drawHoloBillboard(ctx, s.x, s.y, tick, 1); } });
 
-          // Semáforos e Tráfego
           const trafficSecNow = (now / 1000) % 16;
           const avenueLightNow = trafficSecNow < 6 ? 'green' : trafficSecNow < 8 ? 'yellow' : 'red';
           const boulevardLightNow = (trafficSecNow >= 8 && trafficSecNow < 14) ? 'green' : (trafficSecNow >= 14 ? 'yellow' : 'red');
@@ -875,13 +846,9 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
         drawWeatherOverlay(ctx, canvas.width, canvas.height, tick, gameState.weather, lightningFlashRef.current, ripplesRef.current, gameState.timeHour);
 
-        // =========================================================================
-        // PIPELINE GRÁFICO (SHADERS DE POST-PROCESSING CRT)
-        // =========================================================================
         const glitchIntensity = (gameState.weather === 'glitch_storm') ? 6 : 2;
         applyChromaticAberration(ctx, canvas.width, canvas.height, glitchIntensity);
         drawCRTOverlay(ctx, canvas.width, canvas.height, tick);
-        // =========================================================================
 
         floatingTextsRef.current.forEach(ft => {
           const age = now - ft.createdAt; const ageRatio = age / 1800;
@@ -897,7 +864,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         const px = playerRef.current.x; const py = playerRef.current.y;
 
         if (gameState.currentScene === 'town') {
-          // Ligar PROMPTS dos NPCs
           Object.values(gameState.npcs || {}).forEach(npc => {
             if (!npc) return;
             const walker = storyNPCWalkersRef.current[npc.id];
@@ -912,7 +878,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
             }
           });
 
-          // Ligar PROMPTS Dinâmicos Gerados pela Cidade (Lojas, Arcades, Metro, etc.)
           if (!foundPrompt) {
             cityMap.interactables.forEach(int => {
               if (Math.hypot(px - int.x, py - int.y) < 2.2 && !foundPrompt) {
@@ -939,7 +904,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
             });
           }
 
-          // Ligar PROMPTS dos Peões
           if (!foundPrompt) {
             for (const cit of citizensRef.current) {
               if (Math.hypot(px - cit.x, py - cit.y) < 1.8) {
@@ -1075,7 +1039,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           <button onPointerDown={() => keysPressed.current.add('w')} onPointerUp={() => keysPressed.current.delete('w')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▲</button>
         </div>
         <div className="flex gap-2">
-          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keys   Pressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
+          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keysPressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
           <button onPointerDown={() => keysPressed.current.add('s')} onPointerUp={() => keysPressed.current.delete('s')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▼</button>
           <button onPointerDown={() => keysPressed.current.add('d')} onPointerUp={() => keysPressed.current.delete('d')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">►</button>
         </div>
