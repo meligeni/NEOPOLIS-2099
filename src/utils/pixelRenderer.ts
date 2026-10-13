@@ -1,2325 +1,1027 @@
-import { CharacterAppearance, FurnitureDef, HouseProperty, NPC, PlacedFurniture, WorldPlant, WeatherType } from '../types/game';
-import { FURNITURE_CATALOG } from '../data/gameData';
+import React, { useRef, useEffect, useState, useCallback } from 'react';
+import {
+  Camera,
+  TILE_WIDTH,
+  TILE_HEIGHT,
+  isoToScreen,
+  screenToIso,
+  drawIsoTile,
+  drawCharacter,
+  drawFurniture,
+  drawBuildingFacade,
+  drawRain,
+  drawWeatherOverlay,
+  getWeatherAtmosphere,
+  drawVolumetricLight,
+  drawAcademyComplex,
+  drawHackerKiosk,
+  drawHoloLectureStage,
+  drawCyberTree,
+  drawCyberBench,
+  drawSteamGrate,
+  drawParkedHovercar,
+  drawSurveillanceDrone,
+  drawCyberStreetLamp,
+  drawCyberVendingMachine,
+  drawCampusSignpost,
+  drawMovingTrafficVehicle,
+  drawSkyscraperTower,
+  drawMetroStation,
+  drawHoloBillboard,
+  drawTrafficLightSignal,
+  drawPedestrianSkybridge,
+  drawCyberFountain,
+  drawTrashBinAndHydrant,
+  applyChromaticAberration,
+  drawCRTOverlay,
+  TrafficVehicleType,
+  TrafficDirection,
+} from '../utils/pixelRenderer';
+import {
+  CharacterAppearance,
+  FurnitureDef,
+  GameState,
+  HouseProperty,
+  NPC,
+  NPCEstablishment,
+  NPCScheduleSlot,
+  PlacedFurniture,
+  FloatingText,
+  WorldPlant,
+  TrafficLightState,
+} from '../types/game';
+import { FURNITURE_CATALOG, getNPCScheduleForHour, NPC_ESTABLISHMENTS } from '../data/gameData';
+import { sound } from '../utils/audio';
 
-export const TILE_WIDTH = 64;
-export const TILE_HEIGHT = 32;
+interface IsometricGameCanvasProps {
+  gameState: GameState;
+  isDecorateMode: boolean;
+  selectedPlacedId: string | null;
+  selectedCatalogItem: FurnitureDef | null;
+  onInteractNPC: (npc: NPC) => void;
+  onInteractTerminal: () => void;
+  onInteractArcade: () => void;
+  onInteractBed: () => void;
+  onInteractPlant: () => void;
+  onInteractRepairBot: () => void;
+  onEnterHouse: (houseId?: string) => void;
+  onExitHouse: () => void;
+  onEnterInterior?: (interiorId: string) => void;
+  onExitInterior?: () => void;
+  onConsumeEnergy?: (amount: number, reason: string) => boolean;
+  onPlaceFurnitureAt: (x: number, y: number) => void;
+  onSelectPlaced: (instanceId: string | null) => void;
+  onActionReward: (credits: number, exp: number, message: string) => void;
+  onInteractVendingMachine: (category?: 'all' | 'drink' | 'snack') => void;
+  onOpenStoreTab?: (tab: 'cosmetics' | 'furniture' | 'realty') => void;
+}
 
-export interface Camera {
+interface CitizenWalker {
+  id: string;
+  name: string;
   x: number;
   y: number;
-  zoom: number;
+  dir: 'SE' | 'SW' | 'NE' | 'NW';
+  speed: number;
+  appearance: CharacterAppearance;
+  greeting: string;
+  pauseTicks: number;
+  waypoints: Array<{ x: number; y: number }>;
+  waypointIndex: number;
 }
 
-export function isoToScreen(
-  isoX: number,
-  isoY: number,
-  camera: Camera,
-  canvasWidth: number,
-  canvasHeight: number
-): { x: number; y: number } {
-  const screenX = (isoX - isoY) * (TILE_WIDTH / 2);
-  const screenY = (isoX + isoY) * (TILE_HEIGHT / 2);
-  return {
-    x: Math.round(canvasWidth / 2 + (screenX - camera.x) * camera.zoom),
-    y: Math.round(canvasHeight / 2 + (screenY - camera.y) * camera.zoom),
-  };
+interface TrafficCar {
+  id: string;
+  lane: 'avenue_south' | 'avenue_north' | 'boulevard_east' | 'boulevard_west';
+  x: number;
+  y: number;
+  speed: number;
+  type: TrafficVehicleType;
+  dir: TrafficDirection;
 }
 
-export function screenToIso(
-  screenX: number,
-  screenY: number,
-  camera: Camera,
-  canvasWidth: number,
-  canvasHeight: number
-): { x: number; y: number } {
-  const normX = (screenX - canvasWidth / 2) / camera.zoom + camera.x;
-  const normY = (screenY - canvasHeight / 2) / camera.zoom + camera.y;
-
-  const isoX = (normX / (TILE_WIDTH / 2) + normY / (TILE_HEIGHT / 2)) / 2;
-  const isoY = (normY / (TILE_HEIGHT / 2) - normX / (TILE_WIDTH / 2)) / 2;
-
-  return { x: isoX, y: isoY };
+interface StoryNPCWalker {
+  id: string;
+  currentX: number;
+  currentY: number;
+  targetX: number;
+  targetY: number;
+  dir: 'SE' | 'SW' | 'NE' | 'NW';
+  isWalking: boolean;
+  speed: number;
+  pauseTicks: number;
+  currentSlot?: NPCScheduleSlot;
+  statusMessage: string;
 }
 
-// Draw an isometric diamond tile
-export function drawIsoTile(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  fillColor: string,
-  strokeColor?: string,
-  zoom = 1
-) {
-  const hw = (TILE_WIDTH / 2) * zoom;
-  const hh = (TILE_HEIGHT / 2) * zoom;
-
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - hh);
-  ctx.lineTo(screenX + hw, screenY);
-  ctx.lineTo(screenX, screenY + hh);
-  ctx.lineTo(screenX - hw, screenY);
-  ctx.closePath();
-
-  ctx.fillStyle = fillColor;
-  ctx.fill();
-
-  if (strokeColor) {
-    ctx.strokeStyle = strokeColor;
-    ctx.lineWidth = 1;
-    ctx.stroke();
-  }
-}
-
-// Weather atmospheric configurations
-export interface WeatherAtmosphere {
-  skyGradTop: string;
-  skyGradBottom: string;
-  ambientTint: string;
-  ambientIntensity: number; // 0.4 to 1.2
-  fogDensity: number;
-  label: string;
-}
-
-export function getWeatherAtmosphere(weather: WeatherType, timeHour: number = 21): WeatherAtmosphere {
-  const isNight = timeHour >= 19 || timeHour < 6;
-
-  switch (weather) {
-    case 'neon_rain':
-      return {
-        skyGradTop: isNight ? '#040713' : '#081226',
-        skyGradBottom: isNight ? '#0b1329' : '#142548',
-        ambientTint: 'rgba(6, 182, 212, 0.08)',
-        ambientIntensity: 0.78,
-        fogDensity: 0.35,
-        label: 'NEON RAIN',
-      };
-    case 'acid_fog':
-      return {
-        skyGradTop: isNight ? '#080d09' : '#101a11',
-        skyGradBottom: isNight ? '#142215' : '#1e331c',
-        ambientTint: 'rgba(163, 230, 53, 0.12)',
-        ambientIntensity: 0.62,
-        fogDensity: 0.85,
-        label: 'ACID FOG',
-      };
-    case 'glitch_storm':
-      return {
-        skyGradTop: '#0a0518',
-        skyGradBottom: '#190a36',
-        ambientTint: 'rgba(217, 70, 239, 0.14)',
-        ambientIntensity: 0.52,
-        fogDensity: 0.55,
-        label: 'GLITCH STORM',
-      };
-    case 'cyber_clear':
-    default:
-      return {
-        skyGradTop: isNight ? '#020308' : '#0a0d20',
-        skyGradBottom: isNight ? '#080c1d' : '#151d3b',
-        ambientTint: 'rgba(56, 189, 248, 0.04)',
-        ambientIntensity: 1.05,
-        fogDensity: 0.05,
-        label: 'CYBER CLEAR',
-      };
-  }
-}
-
-// Draw dynamic day/night atmospheric lighting & weather overlays
-export function drawWeatherOverlay(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  time: number,
-  weather: WeatherType,
-  lightningFlash: number = 0,
-  ripples: { x: number; y: number; progress: number }[] = [],
-  timeHour: number = 21
-) {
-  ctx.save();
-
-  // =========================================================================
-  // 1. GLOBAL ATMOSPHERIC DAY / NIGHT LIGHTING PASS
-  // =========================================================================
-  if (timeHour >= 5 && timeHour < 9) {
-    // DAWN / ALVORECER (05:00 - 08:59): Warm peach-gold rising sun haze
-    const dawnGrad = ctx.createLinearGradient(0, 0, 0, height);
-    dawnGrad.addColorStop(0, 'rgba(255, 140, 60, 0.18)');
-    dawnGrad.addColorStop(0.5, 'rgba(251, 191, 36, 0.10)');
-    dawnGrad.addColorStop(1, 'rgba(14, 165, 233, 0.08)');
-    ctx.fillStyle = dawnGrad;
-    ctx.fillRect(0, 0, width, height);
-  } else if (timeHour >= 9 && timeHour < 18) {
-    // DAYTIME / PLENO DIA (09:00 - 17:59): Crisp high-contrast cyberpunk sunlight
-    ctx.fillStyle = 'rgba(224, 242, 254, 0.04)';
-    ctx.fillRect(0, 0, width, height);
-  } else if (timeHour >= 18 && timeHour < 21) {
-    // DUSK / PÔR DO SOL SYNTHWAVE (18:00 - 20:59): Deep violet, magenta and neon amber
-    const duskGrad = ctx.createLinearGradient(0, 0, 0, height);
-    duskGrad.addColorStop(0, 'rgba(217, 70, 239, 0.22)');
-    duskGrad.addColorStop(0.5, 'rgba(147, 51, 234, 0.20)');
-    duskGrad.addColorStop(1, 'rgba(249, 115, 22, 0.15)');
-    ctx.fillStyle = duskGrad;
-    ctx.fillRect(0, 0, width, height);
-  } else {
-    // DEEP NIGHT / NOITE PROFUNDA (21:00 - 04:59): Atmospheric dark cyberpunk grading
-    // Makes neon signs, vehicle headlights, and streetlights pop vividly
-    ctx.fillStyle = 'rgba(4, 7, 20, 0.62)';
-    ctx.fillRect(0, 0, width, height);
-  }
-
-  // =========================================================================
-  // 2. WEATHER PARTICLES & EFFECTS PASS
-  // =========================================================================
-  if (weather === 'neon_rain' || weather === 'glitch_storm') {
-    // 1. Rain Streaks (multi-layer parallax)
-    const count = weather === 'glitch_storm' ? 110 : 75;
-    const rainSpeed = weather === 'glitch_storm' ? 680 : 490;
-    const windTilt = weather === 'glitch_storm' ? -9 : -6;
-    const dropLength = weather === 'glitch_storm' ? 20 : 15;
-
-    ctx.lineWidth = weather === 'glitch_storm' ? 1.6 : 1.2;
-
-    for (let i = 0; i < count; i++) {
-      const rx = ((i * 43 + time * (windTilt * 30)) % (width + 60)) - 30;
-      const ry = (i * 71 + time * rainSpeed) % (height + 30);
-
-      // Alternate between cyan and magenta droplets
-      if (i % 3 === 0) {
-        ctx.strokeStyle = weather === 'glitch_storm' ? 'rgba(236, 72, 153, 0.5)' : 'rgba(236, 72, 153, 0.35)';
-      } else {
-        ctx.strokeStyle = weather === 'glitch_storm' ? 'rgba(56, 189, 248, 0.55)' : 'rgba(6, 182, 212, 0.4)';
-      }
-
-      ctx.beginPath();
-      ctx.moveTo(rx, ry);
-      ctx.lineTo(rx + windTilt, ry + dropLength);
-      ctx.stroke();
-    }
-
-    // 2. Ground Rain Ripples
-    ripples.forEach(rip => {
-      const alpha = Math.max(0, 1 - rip.progress);
-      const radius = rip.progress * 18;
-      ctx.beginPath();
-      ctx.ellipse(rip.x, rip.y, radius, radius * 0.5, 0, 0, Math.PI * 2);
-      ctx.strokeStyle = `rgba(6, 182, 212, ${alpha * 0.55})`;
-      ctx.lineWidth = 1.2;
-      ctx.stroke();
-    });
-  }
-
-  if (weather === 'acid_fog') {
-    // Volumetric toxic rolling fog clouds
-    const fogCount = 8;
-    for (let i = 0; i < fogCount; i++) {
-      const fx = ((i * 180 + time * 38) % (width + 260)) - 130;
-      const fy = ((i * 110 + Math.sin(time * 0.8 + i) * 35) % (height + 80));
-      const rad = 150 + (i % 3) * 55;
-
-      const fogGrad = ctx.createRadialGradient(fx, fy, 10, fx, fy, rad);
-      fogGrad.addColorStop(0, 'rgba(163, 230, 53, 0.22)');
-      fogGrad.addColorStop(0.5, 'rgba(101, 163, 13, 0.12)');
-      fogGrad.addColorStop(1, 'rgba(20, 83, 45, 0)');
-
-      ctx.fillStyle = fogGrad;
-      ctx.beginPath();
-      ctx.arc(fx, fy, rad, 0, Math.PI * 2);
-      ctx.fill();
-    }
-
-    // Undulating toxic smog band near ground
-    ctx.fillStyle = 'rgba(163, 230, 53, 0.08)';
-    ctx.fillRect(0, height * 0.35, width, height * 0.65);
-  }
-
-  if (weather === 'cyber_clear') {
-    // Floating Holo-Dust motes and twinkling stars
-    for (let i = 0; i < 32; i++) {
-      const px = ((i * 79 + Math.sin(time * 0.5 + i) * 20) % width);
-      const py = (height - ((i * 47 + time * 28) % height));
-      const sparkle = (Math.sin(time * 3 + i) + 1) / 2;
-
-      ctx.fillStyle = i % 2 === 0 ? `rgba(6, 182, 212, ${0.35 + sparkle * 0.55})` : `rgba(236, 72, 153, ${0.35 + sparkle * 0.55})`;
-      ctx.beginPath();
-      ctx.arc(px, py, 1.5 + sparkle, 0, Math.PI * 2);
-      ctx.fill();
-    }
-  }
-
-  if (weather === 'glitch_storm' && lightningFlash > 0) {
-    // Electric Lightning full-screen flash + chromatic glitch
-    ctx.fillStyle = `rgba(240, 253, 250, ${lightningFlash * 0.5})`;
-    ctx.fillRect(0, 0, width, height);
-
-    // Glitch scanline slice
-    const sliceY = (Math.sin(time * 20) * 0.5 + 0.5) * height;
-    ctx.fillStyle = `rgba(236, 72, 153, ${lightningFlash * 0.4})`;
-    ctx.fillRect(0, sliceY, width, 22);
-  }
-
-  ctx.restore();
-}
-
-
-// Volumetric Light Halo for street lamps and neon signs
-export function drawVolumetricLight(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  radius: number,
-  color: string,
-  weather: WeatherType
-) {
-  ctx.save();
-  // In acid fog, light diffuses much more broadly; in rain it creates wet specular rings
-  const mult = weather === 'acid_fog' ? 1.6 : weather === 'neon_rain' ? 1.2 : 1.0;
-  const rad = radius * mult;
-
-  const grad = ctx.createRadialGradient(screenX, screenY, 2, screenX, screenY, rad);
-  grad.addColorStop(0, color);
-  grad.addColorStop(0.4, color.replace(/[\d\.]+\)$/, '0.12)'));
-  grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-
-  ctx.fillStyle = grad;
-  ctx.beginPath();
-  ctx.arc(screenX, screenY, rad, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.restore();
-}
-
-// Legacy backward compatibility
-export function drawRain(ctx: CanvasRenderingContext2D, width: number, height: number, time: number) {
-  drawWeatherOverlay(ctx, width, height, time, 'neon_rain', 0, []);
-}
-
-// Draw Isometric Character
-export function drawCharacter(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  appearance: {
-    skinTone: string;
-    hairStyle: string;
-    hairColor: string;
-    implant: string;
-    implantColor?: string;
-    outfitStyle: string;
-    outfitColor: string;
-    droneCompanion?: string;
-    name?: string;
-  },
-  direction: 'NE' | 'SE' | 'SW' | 'NW',
-  isMoving: boolean,
-  animTick: number,
-  zoom: number = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Shadow
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 4 * z, 10 * z, 5 * z, 0, 0, Math.PI * 2);
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-  ctx.fill();
-
-  // Walking bounce
-  const bob = isMoving ? Math.sin(animTick * 8) * 2 * z : 0;
-  const legSwing = isMoving ? Math.sin(animTick * 8) * 3 * z : 0;
-  const charBaseY = screenY - 20 * z + bob;
-
-  // Legs / Boots
-  ctx.fillStyle = '#1e1b4b'; // dark tech pants
-  ctx.fillRect(screenX - 4 * z + legSwing, charBaseY + 14 * z, 3 * z, 7 * z);
-  ctx.fillRect(screenX + 1 * z - legSwing, charBaseY + 14 * z, 3 * z, 7 * z);
-
-  // Shoes / Neon Soles
-  ctx.fillStyle = appearance.implantColor || '#06b6d4';
-  ctx.fillRect(screenX - 4 * z + legSwing, charBaseY + 20 * z, 4 * z, 2 * z);
-  ctx.fillRect(screenX + 1 * z - legSwing, charBaseY + 20 * z, 4 * z, 2 * z);
-
-  // Body / Outfit
-  ctx.fillStyle = appearance.outfitColor || '#3b82f6';
-  ctx.fillRect(screenX - 6 * z, charBaseY + 6 * z, 12 * z, 9 * z);
-
-  // Coat tails or details
-  if (appearance.outfitStyle === 'duster') {
-    ctx.fillStyle = appearance.outfitColor || '#18181b';
-    ctx.fillRect(screenX - 7 * z, charBaseY + 10 * z, 3 * z, 8 * z);
-    ctx.fillRect(screenX + 4 * z, charBaseY + 10 * z, 3 * z, 8 * z);
-  } else if (appearance.outfitStyle === 'hoodie') {
-    ctx.fillStyle = '#374151';
-    ctx.fillRect(screenX - 4 * z, charBaseY + 4 * z, 8 * z, 4 * z);
-  }
-
-  // Head
-  ctx.fillStyle = appearance.skinTone || '#fbd0b4';
-  ctx.fillRect(screenX - 5 * z, charBaseY - 4 * z, 10 * z, 10 * z);
-
-  // Eyes / Visor
-  const isFacingSouth = direction === 'SE' || direction === 'SW';
-  const eyeOffset = direction === 'SE' ? 1 * z : direction === 'SW' ? -1 * z : 0;
-
-  if (isFacingSouth) {
-    if (appearance.implant === 'visor') {
-      ctx.fillStyle = appearance.implantColor || '#f43f5e';
-      ctx.fillRect(screenX - 5 * z + eyeOffset, charBaseY - 1 * z, 9 * z, 3 * z);
-      // Visor sheen
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(screenX - 2 * z + eyeOffset, charBaseY - 1 * z, 2 * z, 1 * z);
-    } else {
-      // Normal eyes
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(screenX - 3 * z + eyeOffset, charBaseY - 1 * z, 2 * z, 2 * z);
-      ctx.fillRect(screenX + 1 * z + eyeOffset, charBaseY - 1 * z, 2 * z, 2 * z);
-
-      if (appearance.implant === 'optic_ring') {
-        ctx.fillStyle = appearance.implantColor || '#06b6d4';
-        ctx.fillRect(screenX - 4 * z + eyeOffset, charBaseY - 2 * z, 4 * z, 4 * z);
-        ctx.fillStyle = '#0f172a';
-        ctx.fillRect(screenX - 3 * z + eyeOffset, charBaseY - 1 * z, 2 * z, 2 * z);
-      } else if (appearance.implant === 'cyber_tattoo') {
-        ctx.fillStyle = appearance.implantColor || '#10b981';
-        ctx.fillRect(screenX + 3 * z + eyeOffset, charBaseY, 2 * z, 3 * z);
-      }
-    }
-  }
-
-  // Hair
-  ctx.fillStyle = appearance.hairColor || '#ec4899';
-  if (appearance.hairStyle === 'pixie') {
-    ctx.fillRect(screenX - 6 * z, charBaseY - 7 * z, 12 * z, 5 * z);
-    ctx.fillRect(screenX - 6 * z, charBaseY - 3 * z, 2 * z, 4 * z);
-  } else if (appearance.hairStyle === 'spiky') {
-    ctx.fillRect(screenX - 5 * z, charBaseY - 8 * z, 10 * z, 5 * z);
-    ctx.fillRect(screenX - 3 * z, charBaseY - 10 * z, 6 * z, 3 * z);
-  } else if (appearance.hairStyle === 'bob') {
-    ctx.fillRect(screenX - 6 * z, charBaseY - 7 * z, 12 * z, 5 * z);
-    ctx.fillRect(screenX - 7 * z, charBaseY - 3 * z, 3 * z, 7 * z);
-    ctx.fillRect(screenX + 4 * z, charBaseY - 3 * z, 3 * z, 7 * z);
-  } else if (appearance.hairStyle === 'mohawk') {
-    ctx.fillRect(screenX - 2 * z, charBaseY - 10 * z, 4 * z, 8 * z);
-  } else {
-    // Slick
-    ctx.fillRect(screenX - 5 * z, charBaseY - 6 * z, 10 * z, 4 * z);
-    ctx.fillRect(screenX - 6 * z, charBaseY - 4 * z, 2 * z, 4 * z);
-  }
-
-  // Drone / Companion Pet (if any)
-  if (appearance.droneCompanion && appearance.droneCompanion !== 'none') {
-    const droneY = charBaseY - 10 * z + Math.sin(animTick * 6) * 3 * z;
-    const droneX = screenX + 14 * z;
-
-    if (appearance.droneCompanion === 'holo_cat') {
-      // Pink glowing holographic pixel cat
-      ctx.fillStyle = 'rgba(236, 72, 153, 0.85)';
-      ctx.fillRect(droneX - 3 * z, droneY - 3 * z, 6 * z, 5 * z);
-      // Ears
-      ctx.fillRect(droneX - 3 * z, droneY - 5 * z, 2 * z, 2 * z);
-      ctx.fillRect(droneX + 1 * z, droneY - 5 * z, 2 * z, 2 * z);
-      // Eyes
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(droneX - 2 * z, droneY - 1 * z, 1 * z, 1 * z);
-      ctx.fillRect(droneX + 1 * z, droneY - 1 * z, 1 * z, 1 * z);
-    } else {
-      // Nano hover drone
-      ctx.fillStyle = '#06b6d4';
-      ctx.fillRect(droneX - 4 * z, droneY - 2 * z, 8 * z, 4 * z);
-      ctx.fillStyle = '#38bdf8';
-      ctx.fillRect(droneX - 1 * z, droneY - 1 * z, 2 * z, 2 * z);
-      // Scanner laser beam
-      ctx.strokeStyle = 'rgba(6, 182, 212, 0.35)';
-      ctx.beginPath();
-      ctx.moveTo(droneX, droneY + 2 * z);
-      ctx.lineTo(droneX, screenY);
-      ctx.stroke();
-    }
-  }
-
-  // Name tag
-  if (appearance.name) {
-    ctx.font = '600 10px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
-    ctx.fillRect(screenX - 24 * z, charBaseY - 16 * z, 48 * z, 12 * z);
-    ctx.fillStyle = '#38bdf8';
-    ctx.fillText(appearance.name, screenX, charBaseY - 7 * z);
-  }
-
-  ctx.restore();
-}
-
-// Draw Isometric Furniture Piece
-export function drawFurniture(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  furniture: FurnitureDef,
-  rotation: number = 0,
-  zoom = 1,
-  isGhost = false
-) {
-  const z = zoom;
-  ctx.save();
-
-  if (isGhost) {
-    ctx.globalAlpha = 0.65;
-  }
-
-  const { category, color, glowColor } = furniture;
-
-  const isRug = furniture.id.includes('rug') || furniture.category === 'decor' && furniture.name.toLowerCase().includes('rug');
-
-  // Base shadow (not for rugs)
-  if (!isRug) {
-    ctx.beginPath();
-    ctx.ellipse(screenX, screenY + 4 * z, 18 * z, 9 * z, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-    ctx.fill();
-  }
-
-  if (isRug) {
-    // Isometric Flat Glowing Cyberpunk Rug
-    const rw = (furniture.width * 24 - 4) * z;
-    const rh = (furniture.height * 12 - 2) * z;
-    ctx.beginPath();
-    ctx.moveTo(screenX, screenY - rh);
-    ctx.lineTo(screenX + rw, screenY);
-    ctx.lineTo(screenX, screenY + rh);
-    ctx.lineTo(screenX - rw, screenY);
-    ctx.closePath();
-    ctx.fillStyle = color || '#0f172a';
-    ctx.fill();
-    ctx.strokeStyle = glowColor || '#00f0ff';
-    ctx.lineWidth = 1.5;
-    ctx.stroke();
-
-    // Geometric Matrix / Circuit lines inside the rug
-    ctx.strokeStyle = glowColor ? glowColor.replace(/[\d\.]+\)$/, '0.35)') : 'rgba(0,240,255,0.3)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(screenX, screenY - rh * 0.5);
-    ctx.lineTo(screenX + rw * 0.5, screenY);
-    ctx.lineTo(screenX, screenY + rh * 0.5);
-    ctx.lineTo(screenX - rw * 0.5, screenY);
-    ctx.closePath();
-    ctx.stroke();
-  } else if (category === 'bed') {
-    const isCryo = furniture.id.includes('deluxe') || furniture.id.includes('cryo');
-
-    if (isCryo) {
-      // Biometric Cryo-Stasis Pod Bed
-      // Chrome Pod Shell
-      ctx.fillStyle = '#0f172a';
-      ctx.beginPath();
-      ctx.moveTo(screenX, screenY - 14 * z);
-      ctx.lineTo(screenX + 24 * z, screenY);
-      ctx.lineTo(screenX, screenY + 16 * z);
-      ctx.lineTo(screenX - 24 * z, screenY);
-      ctx.closePath();
-      ctx.fill();
-      ctx.strokeStyle = '#00f0ff';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-
-      // Gel mattress & glowing vitals bed
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(screenX, screenY - 8 * z);
-      ctx.lineTo(screenX + 18 * z, screenY + 3 * z);
-      ctx.lineTo(screenX, screenY + 13 * z);
-      ctx.lineTo(screenX - 18 * z, screenY + 3 * z);
-      ctx.closePath();
-      ctx.fill();
-
-      // Transparent Cryo Glass Canopy arch
-      ctx.fillStyle = 'rgba(6, 182, 212, 0.25)';
-      ctx.strokeStyle = 'rgba(6, 182, 212, 0.8)';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.arc(screenX, screenY - 10 * z, 14 * z, Math.PI, 0);
-      ctx.fill();
-      ctx.stroke();
-
-      // Vital Signs / ECG pulse line on headboard monitor
-      ctx.fillStyle = '#050b14';
-      ctx.fillRect(screenX - 10 * z, screenY - 26 * z, 20 * z, 10 * z);
-      ctx.strokeStyle = '#10b981';
-      ctx.lineWidth = 1.2;
-      ctx.beginPath();
-      ctx.moveTo(screenX - 8 * z, screenY - 21 * z);
-      ctx.lineTo(screenX - 3 * z, screenY - 21 * z);
-      ctx.lineTo(screenX - 1 * z, screenY - 25 * z);
-      ctx.lineTo(screenX + 2 * z, screenY - 17 * z);
-      ctx.lineTo(screenX + 4 * z, screenY - 21 * z);
-      ctx.lineTo(screenX + 8 * z, screenY - 21 * z);
-      ctx.stroke();
-    } else {
-      // Cozy Tatami Synth-Futon Bed
-      ctx.fillStyle = '#1e1b4b';
-      ctx.beginPath();
-      ctx.moveTo(screenX, screenY - 8 * z);
-      ctx.lineTo(screenX + 22 * z, screenY + 3 * z);
-      ctx.lineTo(screenX, screenY + 14 * z);
-      ctx.lineTo(screenX - 22 * z, screenY + 3 * z);
-      ctx.closePath();
-      ctx.fill();
-
-      // Silk duvet
-      ctx.fillStyle = color;
-      ctx.beginPath();
-      ctx.moveTo(screenX, screenY - 3 * z);
-      ctx.lineTo(screenX + 18 * z, screenY + 6 * z);
-      ctx.lineTo(screenX, screenY + 15 * z);
-      ctx.lineTo(screenX - 18 * z, screenY + 6 * z);
-      ctx.closePath();
-      ctx.fill();
-
-      // Pillows
-      ctx.fillStyle = '#ffffff';
-      ctx.fillRect(screenX - 10 * z, screenY - 9 * z, 8 * z, 5 * z);
-      ctx.fillRect(screenX + 2 * z, screenY - 9 * z, 8 * z, 5 * z);
-
-      if (glowColor) {
-        ctx.strokeStyle = glowColor;
-        ctx.lineWidth = 1.5;
-        ctx.beginPath();
-        ctx.moveTo(screenX - 20 * z, screenY + 4 * z);
-        ctx.lineTo(screenX, screenY + 14 * z);
-        ctx.lineTo(screenX + 20 * z, screenY + 4 * z);
-        ctx.stroke();
-      }
-    }
-  } else if (category === 'terminal') {
-    const isBattlestation = furniture.id.includes('battlestation');
-
-    if (isBattlestation) {
-      // Netrunner Triple-Monitor Battlestation Desk
-      // Desk Base
-      ctx.fillStyle = '#0f172a';
-      ctx.fillRect(screenX - 24 * z, screenY - 16 * z, 48 * z, 16 * z);
-      ctx.strokeStyle = '#a855f7';
-      ctx.lineWidth = 1;
-      ctx.strokeRect(screenX - 24 * z, screenY - 16 * z, 48 * z, 16 * z);
-
-      // Center Curved Ultrawide Monitor
-      ctx.fillStyle = '#090d16';
-      ctx.fillRect(screenX - 14 * z, screenY - 38 * z, 28 * z, 18 * z);
-      ctx.strokeStyle = '#c084fc';
-      ctx.lineWidth = 1.5;
-      ctx.strokeRect(screenX - 14 * z, screenY - 38 * z, 28 * z, 18 * z);
-
-      // Matrix code / Terminal screen content
-      ctx.fillStyle = '#00f0ff';
-      ctx.fillRect(screenX - 12 * z, screenY - 35 * z, 24 * z, 2 * z);
-      ctx.fillRect(screenX - 12 * z, screenY - 31 * z, 18 * z, 2 * z);
-      ctx.fillRect(screenX - 12 * z, screenY - 27 * z, 22 * z, 2 * z);
-
-      // Left & Right Angled Wing Monitors
-      ctx.fillStyle = '#1e1b4b';
-      ctx.fillRect(screenX - 26 * z, screenY - 35 * z, 11 * z, 15 * z);
-      ctx.fillRect(screenX + 15 * z, screenY - 35 * z, 11 * z, 15 * z);
-      ctx.fillStyle = '#10b981';
-      ctx.fillRect(screenX - 24 * z, screenY - 32 * z, 7 * z, 2 * z);
-      ctx.fillRect(screenX + 17 * z, screenY - 32 * z, 7 * z, 2 * z);
-
-      // RGB Backlit Keyboard & Glowing Cyberdeck
-      ctx.fillStyle = '#ff2a85';
-      ctx.fillRect(screenX - 10 * z, screenY - 11 * z, 20 * z, 4 * z);
-    } else {
-      // Standard Script-Kiddie Terminal Desk
-      ctx.fillStyle = '#111827';
-      ctx.fillRect(screenX - 16 * z, screenY - 14 * z, 32 * z, 14 * z);
-
-      ctx.fillStyle = glowColor || '#10b981';
-      ctx.fillRect(screenX - 14 * z, screenY - 26 * z, 12 * z, 10 * z);
-      ctx.fillRect(screenX, screenY - 28 * z, 14 * z, 12 * z);
-
-      ctx.fillStyle = '#374151';
-      ctx.fillRect(screenX - 10 * z, screenY - 8 * z, 20 * z, 4 * z);
-      ctx.fillStyle = glowColor || '#34d399';
-      ctx.fillRect(screenX - 8 * z, screenY - 7 * z, 16 * z, 2 * z);
-    }
-  } else if (category === 'arcade') {
-    // Vintage tall arcade cabinet
-    ctx.fillStyle = '#18181b';
-    ctx.fillRect(screenX - 10 * z, screenY - 34 * z, 20 * z, 36 * z);
-
-    // Marquee neon sign
-    ctx.fillStyle = color;
-    ctx.fillRect(screenX - 9 * z, screenY - 33 * z, 18 * z, 6 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 5px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('DRIFT', screenX, screenY - 28.5 * z);
-
-    // CRT screen
-    ctx.fillStyle = '#06b6d4';
-    ctx.fillRect(screenX - 8 * z, screenY - 25 * z, 16 * z, 12 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(screenX - 6 * z, screenY - 22 * z, 8 * z, 2 * z);
-
-    // Joystick & buttons
-    ctx.fillStyle = '#ef4444';
-    ctx.fillRect(screenX - 4 * z, screenY - 11 * z, 2 * z, 3 * z);
-    ctx.fillStyle = '#eab308';
-    ctx.fillRect(screenX + 2 * z, screenY - 11 * z, 3 * z, 2 * z);
-  } else if (category === 'plant') {
-    // Planter pot
-    ctx.fillStyle = '#1f2937';
-    ctx.fillRect(screenX - 9 * z, screenY - 6 * z, 18 * z, 10 * z);
-    ctx.strokeStyle = '#374151';
-    ctx.strokeRect(screenX - 9 * z, screenY - 6 * z, 18 * z, 10 * z);
-
-    // Bonsai Trunk or Hydro stems
-    ctx.strokeStyle = '#78350f';
-    ctx.lineWidth = 2.5;
-    ctx.beginPath();
-    ctx.moveTo(screenX, screenY - 6 * z);
-    ctx.lineTo(screenX - 3 * z, screenY - 14 * z);
-    ctx.lineTo(screenX + 2 * z, screenY - 20 * z);
-    ctx.stroke();
-
-    // Bio-luminescent foliage clouds
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(screenX - 4 * z, screenY - 18 * z, 10 * z, 0, Math.PI * 2);
-    ctx.arc(screenX + 6 * z, screenY - 16 * z, 9 * z, 0, Math.PI * 2);
-    ctx.arc(screenX, screenY - 24 * z, 8 * z, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Spores / glowing dots
-    ctx.fillStyle = glowColor || '#a7f3d0';
-    ctx.fillRect(screenX - 4 * z, screenY - 20 * z, 3 * z, 3 * z);
-    ctx.fillRect(screenX + 4 * z, screenY - 15 * z, 3 * z, 3 * z);
-    ctx.fillRect(screenX, screenY - 26 * z, 2 * z, 2 * z);
-  } else if (category === 'lighting') {
-    // Modern floor lamp / neon light spire
-    ctx.fillStyle = '#334155';
-    ctx.fillRect(screenX - 2 * z, screenY - 28 * z, 4 * z, 28 * z);
-
-    // Glowing Neon Capsule
-    ctx.fillStyle = glowColor || '#f43f5e';
-    ctx.beginPath();
-    ctx.arc(screenX, screenY - 30 * z, 7 * z, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Volumetric Glow halo
-    const halo = ctx.createRadialGradient(screenX, screenY - 30 * z, 2 * z, screenX, screenY - 30 * z, 24 * z);
-    halo.addColorStop(0, 'rgba(244, 63, 94, 0.45)');
-    halo.addColorStop(1, 'rgba(244, 63, 94, 0)');
-    ctx.fillStyle = halo;
-    ctx.beginPath();
-    ctx.arc(screenX, screenY - 30 * z, 24 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (category === 'seating') {
-    // Carbon-Fiber Velvet Couch / Armchair
-    ctx.fillStyle = color;
-    ctx.fillRect(screenX - 18 * z, screenY - 12 * z, 36 * z, 14 * z);
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(screenX - 20 * z, screenY - 14 * z, 4 * z, 16 * z);
-    ctx.fillRect(screenX + 16 * z, screenY - 14 * z, 4 * z, 16 * z);
-
-    // Neon piping trim
-    ctx.strokeStyle = glowColor || '#818cf8';
-    ctx.lineWidth = 1.2;
-    ctx.strokeRect(screenX - 18 * z, screenY - 12 * z, 36 * z, 14 * z);
-  } else if (furniture.id.includes('vending')) {
-    // Personal Ramen & Dumpling Vending Machine
-    ctx.fillStyle = '#dc2626';
-    ctx.fillRect(screenX - 10 * z, screenY - 32 * z, 20 * z, 32 * z);
-    ctx.strokeStyle = '#f87171';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(screenX - 10 * z, screenY - 32 * z, 20 * z, 32 * z);
-
-    // Illuminated glass front
-    ctx.fillStyle = '#1e293b';
-    ctx.fillRect(screenX - 8 * z, screenY - 26 * z, 16 * z, 14 * z);
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(screenX - 6 * z, screenY - 23 * z, 5 * z, 4 * z);
-    ctx.fillRect(screenX + 1 * z, screenY - 23 * z, 5 * z, 4 * z);
-
-    // Dispenser chute
-    ctx.fillStyle = '#0f172a';
-    ctx.fillRect(screenX - 6 * z, screenY - 8 * z, 12 * z, 6 * z);
-  } else if (furniture.id.includes('heart')) {
-    // Neon Heart Wall Sign
-    ctx.fillStyle = '#f43f5e';
-    ctx.font = '700 16px sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('♥', screenX, screenY - 16 * z);
-    const heartGlow = ctx.createRadialGradient(screenX, screenY - 20 * z, 2, screenX, screenY - 20 * z, 18 * z);
-    heartGlow.addColorStop(0, 'rgba(244, 63, 94, 0.4)');
-    heartGlow.addColorStop(1, 'rgba(244, 63, 94, 0)');
-    ctx.fillStyle = heartGlow;
-    ctx.beginPath();
-    ctx.arc(screenX, screenY - 20 * z, 18 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (furniture.id.includes('aquarium')) {
-    // Holographic Cyber-Aquarium
-    ctx.fillStyle = 'rgba(6, 182, 212, 0.35)';
-    ctx.fillRect(screenX - 14 * z, screenY - 22 * z, 28 * z, 18 * z);
-    ctx.strokeStyle = '#00f0ff';
-    ctx.lineWidth = 1.2;
-    ctx.strokeRect(screenX - 14 * z, screenY - 22 * z, 28 * z, 18 * z);
-    // Floating neon jellyfish
-    ctx.fillStyle = '#ff2a85';
-    ctx.beginPath();
-    ctx.arc(screenX - 4 * z, screenY - 14 * z, 3 * z, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.fillStyle = '#38bdf8';
-    ctx.beginPath();
-    ctx.arc(screenX + 5 * z, screenY - 12 * z, 2.5 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    // High-tech decor block
-    ctx.fillStyle = color || '#1e293b';
-    ctx.fillRect(screenX - 10 * z, screenY - 20 * z, 20 * z, 20 * z);
-    if (glowColor) {
-      ctx.fillStyle = glowColor;
-      ctx.fillRect(screenX - 8 * z, screenY - 16 * z, 16 * z, 4 * z);
-    }
-  }
-
-  ctx.restore();
-}
-
-// Draw world landmarks (Cyberpunk stores, Ramen Shop, Black Ice lounge, Clinic)
-export function drawBuildingFacade(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  type: 'clinic' | 'greenhouse' | 'bazaar' | 'blackice' | 'ramen' | 'realty',
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Building block
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX - 32 * z, screenY - 60 * z, 64 * z, 56 * z);
-
-  // Roof trim
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(screenX - 34 * z, screenY - 64 * z, 68 * z, 6 * z);
-
-  // Neon signage
-  if (type === 'clinic') {
-    ctx.fillStyle = '#06b6d4';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('CHROME & NEEDLE', screenX, screenY - 47 * z);
-    // Medical Cross
-    ctx.fillStyle = '#f43f5e';
-    ctx.fillRect(screenX - 2 * z, screenY - 38 * z, 4 * z, 12 * z);
-    ctx.fillRect(screenX - 6 * z, screenY - 34 * z, 12 * z, 4 * z);
-  } else if (type === 'greenhouse') {
-    ctx.fillStyle = '#10b981';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('FLORA SYNTH', screenX, screenY - 47 * z);
-    // Glowing neon leaf
-    ctx.fillStyle = '#34d399';
-    ctx.beginPath();
-    ctx.arc(screenX, screenY - 30 * z, 8 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (type === 'bazaar') {
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('GLITCH & GRIND', screenX, screenY - 47 * z);
-    // Gear graphic
-    ctx.fillStyle = '#fbbf24';
-    ctx.fillRect(screenX - 6 * z, screenY - 36 * z, 12 * z, 12 * z);
-  } else if (type === 'blackice') {
-    ctx.fillStyle = '#c084fc';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('THE BLACK ICE', screenX, screenY - 47 * z);
-    // Neon cocktail / dice
-    ctx.fillStyle = '#ec4899';
-    ctx.fillRect(screenX - 5 * z, screenY - 35 * z, 10 * z, 10 * z);
-  } else if (type === 'ramen') {
-    ctx.fillStyle = '#ef4444';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#ffffff';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('BAO’S STEAM WOK', screenX, screenY - 47 * z);
-    // Red lantern
-    ctx.fillStyle = '#f87171';
-    ctx.beginPath();
-    ctx.arc(screenX, screenY - 32 * z, 6 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else {
-    // Realty
-    ctx.fillStyle = '#eab308';
-    ctx.fillRect(screenX - 24 * z, screenY - 56 * z, 48 * z, 14 * z);
-    ctx.fillStyle = '#000000';
-    ctx.font = '700 8px "Chakra Petch", sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('APEX REAL ESTATE', screenX, screenY - 47 * z);
-  }
-
-  // Glowing doorway
-  ctx.fillStyle = '#0284c7';
-  ctx.fillRect(screenX - 8 * z, screenY - 18 * z, 16 * z, 18 * z);
-  ctx.fillStyle = '#38bdf8';
-  ctx.fillRect(screenX - 6 * z, screenY - 16 * z, 12 * z, 16 * z);
-
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// REFERENCE IMAGE INSPIRED ARCHITECTURAL PRIMITIVES
-// ---------------------------------------------------------------------------
-
-// 1. Grand Cyber Academy Complex (The centerpiece building on the right)
-export function drawAcademyComplex(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Building Shadow
-  ctx.fillStyle = 'rgba(10, 12, 22, 0.6)';
-  ctx.beginPath();
-  ctx.ellipse(screenX + 20 * z, screenY + 40 * z, 140 * z, 60 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Main Tiered Cyber-Structure Base
-  ctx.fillStyle = '#1e2334';
-  ctx.fillRect(screenX - 80 * z, screenY - 140 * z, 180 * z, 140 * z);
-  ctx.strokeStyle = '#37415a';
-  ctx.lineWidth = 2 * z;
-  ctx.strokeRect(screenX - 80 * z, screenY - 140 * z, 180 * z, 140 * z);
-
-  // Upper Roof Deck & Trim
-  ctx.fillStyle = '#2b3248';
-  ctx.fillRect(screenX - 85 * z, screenY - 148 * z, 190 * z, 12 * z);
-  ctx.fillStyle = '#3f4968';
-  ctx.fillRect(screenX - 83 * z, screenY - 147 * z, 186 * z, 3 * z);
-
-  // Solar Panel Arrays on Roof (left side of roof)
-  ctx.save();
-  ctx.fillStyle = '#1e3a5f';
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(screenX - 45 * z, screenY - 165 * z);
-  ctx.lineTo(screenX + 5 * z, screenY - 165 * z);
-  ctx.lineTo(screenX - 5 * z, screenY - 148 * z);
-  ctx.lineTo(screenX - 55 * z, screenY - 148 * z);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  // Solar grid lines
-  ctx.beginPath();
-  ctx.moveTo(screenX - 25 * z, screenY - 165 * z);
-  ctx.lineTo(screenX - 35 * z, screenY - 148 * z);
-  ctx.moveTo(screenX - 10 * z, screenY - 165 * z);
-  ctx.lineTo(screenX - 20 * z, screenY - 148 * z);
-  ctx.stroke();
-  ctx.restore();
-
-  // Satellite Dish Antenna (right side of roof)
-  const dishBob = Math.sin(time * 0.8) * 2 * z;
-  ctx.fillStyle = '#475569';
-  ctx.fillRect(screenX + 45 * z, screenY - 160 * z, 4 * z, 14 * z);
-  ctx.beginPath();
-  ctx.arc(screenX + 47 * z, screenY - 164 * z + dishBob, 12 * z, -0.6, 2.6);
-  ctx.fillStyle = '#64748b';
-  ctx.fill();
-  ctx.strokeStyle = '#94a3b8';
-  ctx.lineWidth = 1.5;
-  ctx.stroke();
-  // Cyan signal blip
-  ctx.fillStyle = '#00f0ff';
-  ctx.beginPath();
-  ctx.arc(screenX + 47 * z, screenY - 164 * z + dishBob, 2 * z, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Upper Wall Pink Holographic Academy Crest (Shield with Emblem)
-  const crestPulse = 0.7 + Math.sin(time * 2) * 0.25;
-  ctx.strokeStyle = `rgba(255, 42, 133, ${crestPulse})`;
-  ctx.lineWidth = 2 * z;
-  ctx.fillStyle = 'rgba(255, 42, 133, 0.12)';
-  ctx.beginPath();
-  ctx.moveTo(screenX - 60 * z, screenY - 120 * z);
-  ctx.lineTo(screenX - 20 * z, screenY - 120 * z);
-  ctx.lineTo(screenX - 20 * z, screenY - 95 * z);
-  ctx.lineTo(screenX - 40 * z, screenY - 78 * z);
-  ctx.lineTo(screenX - 60 * z, screenY - 95 * z);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-  // Inner crest cross
-  ctx.strokeRect(screenX - 46 * z, screenY - 110 * z, 12 * z, 18 * z);
-
-  // Lower Wall Pillar Cyan Holographic Crest
-  ctx.strokeStyle = 'rgba(0, 240, 255, 0.85)';
-  ctx.fillStyle = 'rgba(0, 240, 255, 0.1)';
-  ctx.beginPath();
-  ctx.moveTo(screenX + 35 * z, screenY - 80 * z);
-  ctx.lineTo(screenX + 75 * z, screenY - 80 * z);
-  ctx.lineTo(screenX + 75 * z, screenY - 55 * z);
-  ctx.lineTo(screenX + 55 * z, screenY - 40 * z);
-  ctx.lineTo(screenX + 35 * z, screenY - 55 * z);
-  ctx.closePath();
-  ctx.fill();
-  ctx.stroke();
-
-  // Grand Heavy Blast Door
-  ctx.fillStyle = '#0f1422';
-  ctx.fillRect(screenX - 18 * z, screenY - 78 * z, 36 * z, 42 * z);
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 2 * z;
-  ctx.strokeRect(screenX - 18 * z, screenY - 78 * z, 36 * z, 42 * z);
-  // Door vertical split & glowing seams
-  ctx.strokeStyle = '#38bdf8';
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - 78 * z);
-  ctx.lineTo(screenX, screenY - 36 * z);
-  ctx.stroke();
-  ctx.fillStyle = '#ff2a85';
-  ctx.fillRect(screenX - 8 * z, screenY - 58 * z, 16 * z, 3 * z);
-
-  // Grand Entrance Stairs with Alternating Pink & Cyan Neon Treads!
-  const stepCount = 6;
-  const startY = screenY - 36 * z;
-  for (let i = 0; i < stepCount; i++) {
-    const stepW = (38 + i * 8) * z;
-    const curY = startY + i * 6 * z;
-    const curX = screenX - (i * 4) * z;
-
-    ctx.fillStyle = '#1a1f30';
-    ctx.fillRect(curX - stepW / 2, curY, stepW, 6 * z);
-
-    // Neon edge light line (alternating cyan & pink)
-    ctx.strokeStyle = i % 2 === 0 ? '#00f0ff' : '#ff2a85';
-    ctx.lineWidth = 1.8 * z;
-    ctx.beginPath();
-    ctx.moveTo(curX - stepW / 2, curY);
-    ctx.lineTo(curX + stepW / 2, curY);
-    ctx.stroke();
-  }
-
-  // Heavy Conduit Pipes & Wire Bundles along base
-  ctx.strokeStyle = '#ff2a85';
-  ctx.lineWidth = 2.5 * z;
-  ctx.beginPath();
-  ctx.moveTo(screenX - 70 * z, screenY - 20 * z);
-  ctx.lineTo(screenX - 45 * z, screenY - 20 * z);
-  ctx.lineTo(screenX - 45 * z, screenY);
-  ctx.stroke();
-
-  ctx.strokeStyle = '#00f0ff';
-  ctx.beginPath();
-  ctx.moveTo(screenX + 30 * z, screenY - 25 * z);
-  ctx.lineTo(screenX + 50 * z, screenY - 25 * z);
-  ctx.lineTo(screenX + 50 * z, screenY + 5 * z);
-  ctx.stroke();
-
-  // Server rack with blinking LEDs on the left flank
-  ctx.fillStyle = '#151926';
-  ctx.fillRect(screenX - 75 * z, screenY - 70 * z, 20 * z, 36 * z);
-  ctx.strokeStyle = '#334155';
-  ctx.strokeRect(screenX - 75 * z, screenY - 70 * z, 20 * z, 36 * z);
-  for (let r = 0; r < 4; r++) {
-    const ledOn = (Math.floor(time * 4) + r) % 3 === 0;
-    ctx.fillStyle = ledOn ? '#00f0ff' : '#22c55e';
-    ctx.fillRect(screenX - 72 * z, screenY - 65 * z + r * 7 * z, 4 * z, 3 * z);
-    ctx.fillStyle = '#475569';
-    ctx.fillRect(screenX - 66 * z, screenY - 65 * z + r * 7 * z, 9 * z, 3 * z);
-  }
-
-  ctx.restore();
-}
-
-// 2. High-Tech Hacker Study Kiosks (Left side workstations with pink neon canopies)
-export function drawHackerKiosk(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1,
-  isOccupied = true
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Kiosk Base & Counter Desk
-  ctx.fillStyle = '#1e2436';
-  ctx.fillRect(screenX - 22 * z, screenY - 32 * z, 44 * z, 32 * z);
-  ctx.strokeStyle = '#334155';
-  ctx.lineWidth = 1.5;
-  ctx.strokeRect(screenX - 22 * z, screenY - 32 * z, 44 * z, 32 * z);
-
-  // Canopy Roof with Vibrant Pink Neon Strip
-  ctx.fillStyle = '#2b334d';
-  ctx.fillRect(screenX - 26 * z, screenY - 44 * z, 52 * z, 12 * z);
-  ctx.fillStyle = '#ff2a85';
-  ctx.fillRect(screenX - 24 * z, screenY - 43 * z, 48 * z, 3 * z);
-  // Pink neon sign glow
-  ctx.strokeStyle = 'rgba(255, 42, 133, 0.6)';
-  ctx.lineWidth = 2 * z;
-  ctx.strokeRect(screenX - 26 * z, screenY - 44 * z, 52 * z, 12 * z);
-
-  // CRT / Terminal Monitors on Counter
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX - 16 * z, screenY - 26 * z, 14 * z, 12 * z);
-  // Glowing green/cyan matrix screen
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 14 * z, screenY - 24 * z, 10 * z, 8 * z);
-  // Screen scanline
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(screenX - 13 * z, screenY - 22 * z, 6 * z, 1 * z);
-
-  // Keyboard
-  ctx.fillStyle = '#475569';
-  ctx.fillRect(screenX - 15 * z, screenY - 12 * z, 12 * z, 4 * z);
-
-  // Cable bundles trailing to the floor
-  ctx.strokeStyle = '#ff2a85';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.moveTo(screenX - 10 * z, screenY - 8 * z);
-  ctx.lineTo(screenX - 10 * z, screenY + 4 * z);
-  ctx.lineTo(screenX - 24 * z, screenY + 10 * z);
-  ctx.stroke();
-
-  // If occupied, render sitting cyber-student typing
-  if (isOccupied) {
-    const typeBob = Math.sin(time * 10) * 1 * z;
-    ctx.fillStyle = '#3b82f6';
-    ctx.fillRect(screenX + 2 * z, screenY - 20 * z + typeBob, 10 * z, 12 * z);
-    // Head & visor
-    ctx.fillStyle = '#fbd0b4';
-    ctx.fillRect(screenX + 3 * z, screenY - 28 * z + typeBob, 8 * z, 8 * z);
-    ctx.fillStyle = '#ff2a85';
-    ctx.fillRect(screenX + 2 * z, screenY - 30 * z + typeBob, 10 * z, 4 * z);
-    ctx.fillStyle = '#00f0ff';
-    ctx.fillRect(screenX + 7 * z, screenY - 25 * z + typeBob, 4 * z, 2 * z);
-  }
-
-  ctx.restore();
-}
-
-// 3. Elevated Holographic Lecture Stage / Dais
-export function drawHoloLectureStage(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Platform Base (Stepped Octagonal / Diamond Platform)
-  ctx.fillStyle = '#181e2e';
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - 16 * z);
-  ctx.lineTo(screenX + 44 * z, screenY);
-  ctx.lineTo(screenX, screenY + 16 * z);
-  ctx.lineTo(screenX - 44 * z, screenY);
-  ctx.closePath();
-  ctx.fill();
-
-  // Vibrant Pink / Cyan LED Border Frame
-  ctx.strokeStyle = '#ff2a85';
-  ctx.lineWidth = 2.5 * z;
-  ctx.stroke();
-
-  // Step Riser
-  ctx.fillStyle = '#101420';
-  ctx.fillRect(screenX - 44 * z, screenY, 88 * z, 8 * z);
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5 * z;
-  ctx.beginPath();
-  ctx.moveTo(screenX - 44 * z, screenY + 8 * z);
-  ctx.lineTo(screenX + 44 * z, screenY + 8 * z);
-  ctx.stroke();
-
-  // Floating Hologram Screen (Translucent Cyan [ AI ] screen)
-  const holoFloat = Math.sin(time * 2.5) * 3 * z;
-  const holoX = screenX + 16 * z;
-  const holoY = screenY - 45 * z + holoFloat;
-
-  ctx.fillStyle = 'rgba(0, 240, 255, 0.22)';
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5;
-  ctx.fillRect(holoX - 22 * z, holoY - 16 * z, 44 * z, 28 * z);
-  ctx.strokeRect(holoX - 22 * z, holoY - 16 * z, 44 * z, 28 * z);
-
-  // Hologram text & graphics: [ AI ] and circuit grid
-  ctx.fillStyle = '#00f0ff';
-  ctx.font = `bold ${Math.round(11 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('AI', holoX, holoY - 2 * z);
-
-  // Circuit graph inside hologram
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(holoX - 16 * z, holoY + 6 * z);
-  ctx.lineTo(holoX - 6 * z, holoY + 6 * z);
-  ctx.lineTo(holoX, holoY + 2 * z);
-  ctx.lineTo(holoX + 8 * z, holoY + 6 * z);
-  ctx.lineTo(holoX + 16 * z, holoY + 6 * z);
-  ctx.stroke();
-
-  // Floating cyan hologram grid plate behind stage
-  ctx.strokeStyle = 'rgba(0, 240, 255, 0.35)';
-  ctx.strokeRect(screenX - 35 * z, screenY - 50 * z, 24 * z, 20 * z);
-  for (let g = 1; g < 4; g++) {
-    ctx.beginPath();
-    ctx.moveTo(screenX - 35 * z + g * 6 * z, screenY - 50 * z);
-    ctx.lineTo(screenX - 35 * z + g * 6 * z, screenY - 30 * z);
-    ctx.stroke();
-  }
-
-  // Professor / Lecturer Avatar on the stage
-  const profBob = Math.sin(time * 3) * 1 * z;
-  const profX = screenX - 6 * z;
-  const profY = screenY - 14 * z + profBob;
-
-  // Lab coat / clothes
-  ctx.fillStyle = '#f8fafc'; // White lab coat
-  ctx.fillRect(profX - 5 * z, profY - 16 * z, 10 * z, 14 * z);
-  ctx.fillStyle = '#0f172a'; // Dark shirt underneath
-  ctx.fillRect(profX - 2 * z, profY - 16 * z, 4 * z, 8 * z);
-
-  // Cybernetic arm (right arm glows cyan!)
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(profX + 5 * z, profY - 15 * z, 3 * z, 9 * z);
-
-  // Head, grey hair, cyber-specs
-  ctx.fillStyle = '#fed7aa';
-  ctx.fillRect(profX - 4 * z, profY - 24 * z, 8 * z, 8 * z);
-  ctx.fillStyle = '#94a3b8'; // Grey hair
-  ctx.fillRect(profX - 5 * z, profY - 26 * z, 10 * z, 3 * z);
-  ctx.fillStyle = '#00f0ff'; // Cyber glasses
-  ctx.fillRect(profX - 3 * z, profY - 22 * z, 6 * z, 2 * z);
-
-  ctx.restore();
-}
-
-// 4. Iconic Cyber Bonsai Tree (From reference image: dark trunk + lush turquoise leaves)
-export function drawCyberTree(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Cylindrical Base Planter with Neon Cyan Rim
-  ctx.fillStyle = '#1c2235';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 4 * z, 14 * z, 7 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 2 * z;
-  ctx.stroke();
-
-  // Planter Wall Depth
-  ctx.fillStyle = '#131826';
-  ctx.fillRect(screenX - 14 * z, screenY + 4 * z, 28 * z, 8 * z);
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 12 * z, 14 * z, 6 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Dark Sculpted Bonsai Trunk & Branches
-  ctx.fillStyle = '#171a26';
-  ctx.fillRect(screenX - 3 * z, screenY - 28 * z, 6 * z, 32 * z);
-
-  // Branch splits
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - 18 * z);
-  ctx.lineTo(screenX - 14 * z, screenY - 34 * z);
-  ctx.lineTo(screenX - 12 * z, screenY - 36 * z);
-  ctx.lineTo(screenX + 2 * z, screenY - 20 * z);
-  ctx.closePath();
-  ctx.fill();
-
-  ctx.beginPath();
-  ctx.moveTo(screenX, screenY - 20 * z);
-  ctx.lineTo(screenX + 16 * z, screenY - 38 * z);
-  ctx.lineTo(screenX + 18 * z, screenY - 36 * z);
-  ctx.lineTo(screenX + 2 * z, screenY - 18 * z);
-  ctx.closePath();
-  ctx.fill();
-
-  // Bioluminescent Turquoise / Cyan Leaf Clusters with swaying shimmer
-  const leafSway = Math.sin(time * 1.5) * 1.5 * z;
-  const leafClusters = [
-    { x: screenX - 16 * z + leafSway, y: screenY - 42 * z, r: 12 * z },
-    { x: screenX + 16 * z - leafSway, y: screenY - 46 * z, r: 14 * z },
-    { x: screenX + leafSway * 0.5, y: screenY - 56 * z, r: 16 * z },
-    { x: screenX - 6 * z, y: screenY - 38 * z, r: 10 * z },
-  ];
-
-  leafClusters.forEach((cl, i) => {
-    // Deep turquoise base
-    ctx.fillStyle = i % 2 === 0 ? '#00b4d8' : '#0077b6';
-    ctx.beginPath();
-    ctx.arc(cl.x, cl.y, cl.r, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Glowing vibrant cyan highlight leaf clusters
-    ctx.fillStyle = '#00f5d4';
-    ctx.beginPath();
-    ctx.arc(cl.x - 2 * z, cl.y - 3 * z, cl.r * 0.65, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Spore sparkle dots
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(cl.x - 1 * z, cl.y - 4 * z, 2 * z, 2 * z);
-    ctx.fillRect(cl.x + 3 * z, cl.y + 1 * z, 1.5 * z, 1.5 * z);
+export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) => {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const propsRef = useRef(props);
+
+  useEffect(() => {
+    propsRef.current = props;
+  }, [props]);
+
+  const TOWN_SIZE = 46;
+
+  const playerRef = useRef({
+    x: props.gameState?.currentScene === 'town' ? 10 : 3,
+    y: props.gameState?.currentScene === 'town' ? 10 : 3,
+    dir: 'SE' as 'SE' | 'SW' | 'NE' | 'NW',
+    isMoving: false,
   });
 
-  ctx.restore();
-}
+  const floatingTextsRef = useRef<FloatingText[]>([]);
+  const [nearbyPrompt, setNearbyPrompt] = useState<{text: string; action: () => void; x: number; y: number;} | null>(null);
+  const currentPromptRef = useRef<{text: string; action: () => void; x: number; y: number;} | null>(null);
+  const [uiCoords, setUiCoords] = useState({ x: playerRef.current.x, y: playerRef.current.y });
+  const lastFloorCoordsRef = useRef({ x: Math.floor(playerRef.current.x), y: Math.floor(playerRef.current.y) });
 
-// 5. High-Tech Park Bench with Flowerbed
-export function drawCyberBench(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  hasStudent = false,
-  time = 0,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
+  const cameraRef = useRef<Camera>({ x: 0, y: 0, zoom: 1 });
+  const mouseIsoRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const keysPressed = useRef<Set<string>>(new Set());
 
-  // Planter bed behind bench
-  ctx.fillStyle = '#1c2234';
-  ctx.fillRect(screenX - 22 * z, screenY - 18 * z, 44 * z, 8 * z);
-  // Glowing cyan/pink flowers
-  for (let f = 0; f < 5; f++) {
-    ctx.fillStyle = f % 2 === 0 ? '#00f0ff' : '#ff2a85';
-    ctx.beginPath();
-    ctx.arc(screenX - 16 * z + f * 8 * z, screenY - 20 * z, 2.5 * z, 0, Math.PI * 2);
-    ctx.fill();
-  }
+  const lastTimeRef = useRef<number>(0);
+  const tickRef = useRef<number>(0);
+  
+  const ripplesRef = useRef<{ x: number; y: number; progress: number }[]>([]);
+  const lightningFlashRef = useRef<number>(0);
+  const nextLightningTimeRef = useRef<number>(Date.now() + 3500);
+  const lastStepSoundTimeRef = useRef<number>(0);
 
-  // Bench Seat & Backrest
-  ctx.fillStyle = '#2d3748';
-  ctx.fillRect(screenX - 20 * z, screenY - 10 * z, 40 * z, 4 * z);
-  ctx.fillStyle = '#1f2937';
-  ctx.fillRect(screenX - 20 * z, screenY - 4 * z, 40 * z, 4 * z);
-  // Legs
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 18 * z, screenY, 3 * z, 6 * z);
-  ctx.fillRect(screenX + 15 * z, screenY, 3 * z, 6 * z);
+  const storyNPCWalkersRef = useRef<Record<string, StoryNPCWalker>>({});
 
-  // Student sitting on bench with laptop
-  if (hasStudent) {
-    const studentX = screenX - 4 * z;
-    const studentY = screenY - 12 * z;
+  const trafficVehiclesRef = useRef<TrafficCar[]>([
+    { id: 't1', lane: 'avenue_south', x: 21.5, y: 2, speed: 0.11, type: 'taxi', dir: 'SE' },
+    { id: 't2', lane: 'avenue_south', x: 21.5, y: 22, speed: 0.14, type: 'speeder', dir: 'SE' },
+    { id: 't3', lane: 'avenue_north', x: 23.5, y: 44, speed: 0.12, type: 'patrol', dir: 'NW' },
+    { id: 't4', lane: 'avenue_north', x: 23.5, y: 16, speed: 0.09, type: 'cargo', dir: 'NW' },
+    { id: 't5', lane: 'boulevard_east', x: 3, y: 21.5, speed: 0.12, type: 'taxi', dir: 'SW' },
+    { id: 't6', lane: 'boulevard_east', x: 28, y: 21.5, speed: 0.10, type: 'cargo', dir: 'SW' },
+    { id: 't7', lane: 'boulevard_west', x: 42, y: 23.5, speed: 0.15, type: 'speeder', dir: 'NE' },
+    { id: 't8', lane: 'boulevard_west', x: 18, y: 23.5, speed: 0.12, type: 'patrol', dir: 'NE' },
+  ]);
 
-    // Body
-    ctx.fillStyle = '#6366f1';
-    ctx.fillRect(studentX - 4 * z, studentY, 8 * z, 10 * z);
-    // Head & hair
-    ctx.fillStyle = '#fed7aa';
-    ctx.fillRect(studentX - 3 * z, studentY - 8 * z, 6 * z, 7 * z);
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(studentX - 4 * z, studentY - 10 * z, 8 * z, 3 * z);
-    // Laptop
-    ctx.fillStyle = '#94a3b8';
-    ctx.fillRect(studentX - 5 * z, studentY + 2 * z, 10 * z, 2 * z);
-    ctx.fillStyle = '#00f0ff'; // Screen glow
-    ctx.fillRect(studentX - 5 * z, studentY - 3 * z, 10 * z, 5 * z);
-  }
+  const citizensRef = useRef<CitizenWalker[]>([
+    { id: 'cit_1', name: 'Cipher', x: 6, y: 9, dir: 'SE', speed: 0.045, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 6, y: 9 }, { x: 10, y: 9 }, { x: 15, y: 9 }, { x: 15, y: 15 }, { x: 8, y: 15 }], appearance: { name: 'Cipher', gender: 'neutral', origin: 'netrunner', skinTone: '#fbcfe8', hairStyle: 'mohawk', hairColor: '#00f0ff', implant: 'visor', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#1e1b4b', droneCompanion: 'none' }, greeting: 'Cipher: "Watch the crosswalks! Those hover-taxis take corners at full throttle."' },
+    { id: 'cit_2', name: 'Kira', x: 10, y: 6, dir: 'SW', speed: 0.04, pauseTicks: 20, waypointIndex: 0, waypoints: [{ x: 10, y: 6 }, { x: 10, y: 12 }, { x: 5, y: 12 }, { x: 5, y: 6 }], appearance: { name: 'Kira', gender: 'fem', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#ff2a85', implant: 'optic_ring', implantColor: '#ff2a85', outfitStyle: 'bomber', outfitColor: '#f43f5e', droneCompanion: 'none' }, greeting: 'Kira: "Bao’s cyber-ramen has real synth-chili oil today. Best fuel in District 1!"' },
+    { id: 'cit_3', name: 'Zero', x: 14, y: 8, dir: 'NE', speed: 0.042, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 14, y: 8 }, { x: 17, y: 8 }, { x: 17, y: 16 }, { x: 12, y: 16 }], appearance: { name: 'Zero', gender: 'masc', origin: 'mechanic', skinTone: '#e2e8f0', hairStyle: 'spiky', hairColor: '#facc15', implant: 'chrome_jaw', implantColor: '#94a3b8', outfitStyle: 'hoodie', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Zero: "Glitch & Grind got a shipment of quantum cyberdecks this morning."' },
+    { id: 'cit_4', name: 'Vex', x: 19, y: 19, dir: 'SE', speed: 0.05, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 18, y: 19 }, { x: 26, y: 19 }, { x: 28, y: 14 }, { x: 26, y: 19 }, { x: 18, y: 19 }], appearance: { name: 'Vex', gender: 'neutral', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'dreads', hairColor: '#a855f7', implant: 'visor', implantColor: '#a855f7', outfitStyle: 'duster', outfitColor: '#090d16', droneCompanion: 'none' }, greeting: 'Vex: "Heading across the avenue to the Academy lecture. Late again!"' },
+    { id: 'cit_5', name: 'Aero', x: 26, y: 26, dir: 'NW', speed: 0.048, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 26, y: 26 }, { x: 18, y: 26 }, { x: 14, y: 32 }, { x: 18, y: 26 }, { x: 26, y: 26 }], appearance: { name: 'Aero', gender: 'masc', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'slick', hairColor: '#38bdf8', implant: 'neural_jack', implantColor: '#38bdf8', outfitStyle: 'bomber', outfitColor: '#0284c7', droneCompanion: 'none' }, greeting: 'Aero: "Courier delivery run to the Capsule Towers. 5 minutes on the clock!"' },
+    { id: 'cit_6', name: 'Lyra', x: 30, y: 10, dir: 'SE', speed: 0.038, pauseTicks: 30, waypointIndex: 0, waypoints: [{ x: 30, y: 10 }, { x: 35, y: 10 }, { x: 35, y: 16 }, { x: 30, y: 16 }], appearance: { name: 'Lyra', gender: 'fem', origin: 'alchemist', skinTone: '#fbcfe8', hairStyle: 'pixie', hairColor: '#10b981', implant: 'optic_ring', implantColor: '#10b981', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Lyra: "The synth-flora spores near the campus quad have high biocell density today."' },
+    { id: 'cit_7', name: 'Shin', x: 36, y: 14, dir: 'NE', speed: 0.04, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 36, y: 14 }, { x: 42, y: 14 }, { x: 42, y: 8 }, { x: 36, y: 8 }], appearance: { name: 'Shin', gender: 'masc', origin: 'mechanic', skinTone: '#fcd34d', hairStyle: 'spiky', hairColor: '#f97316', implant: 'cyber_tattoo', implantColor: '#f97316', outfitStyle: 'hoodie', outfitColor: '#7c2d12', droneCompanion: 'none' }, greeting: 'Shin: "The maintenance drones keep getting ionized by the acid rain."' },
+    { id: 'cit_8', name: 'Rook', x: 8, y: 33, dir: 'SE', speed: 0.042, pauseTicks: 15, waypointIndex: 0, waypoints: [{ x: 8, y: 33 }, { x: 15, y: 33 }, { x: 15, y: 40 }, { x: 8, y: 40 }], appearance: { name: 'Rook', gender: 'masc', origin: 'mechanic', skinTone: '#94a3b8', hairStyle: 'mohawk', hairColor: '#ef4444', implant: 'chrome_jaw', implantColor: '#ef4444', outfitStyle: 'bomber', outfitColor: '#18181b', droneCompanion: 'none' }, greeting: 'Rook: "Capsule Pod 404 is a tight squeeze, but nothing beats that rooftop rain sound."' },
+    { id: 'cit_9', name: 'Maya', x: 12, y: 36, dir: 'SW', speed: 0.039, pauseTicks: 25, waypointIndex: 0, waypoints: [{ x: 12, y: 36 }, { x: 6, y: 36 }, { x: 6, y: 42 }, { x: 12, y: 42 }], appearance: { name: 'Maya', gender: 'fem', origin: 'netrunner', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#c084fc', implant: 'visor', implantColor: '#c084fc', outfitStyle: 'duster', outfitColor: '#312e81', droneCompanion: 'none' }, greeting: 'Maya: "The skybridge between blocks has an incredible view of the neon highway below."' },
+    { id: 'cit_10', name: 'Tate', x: 32, y: 33, dir: 'SE', speed: 0.046, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 32, y: 33 }, { x: 38, y: 33 }, { x: 38, y: 39 }, { x: 32, y: 39 }], appearance: { name: 'Tate', gender: 'neutral', origin: 'courier', skinTone: '#fbcfe8', hairStyle: 'slick', hairColor: '#00f0ff', implant: 'optic_ring', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Tate: "Next train on Line 01 arrives in 2 minutes. Neopolis transit never sleeps."' },
+    { id: 'cit_11', name: 'Orion', x: 35, y: 37, dir: 'NE', speed: 0.035, pauseTicks: 40, waypointIndex: 0, waypoints: [{ x: 35, y: 37 }, { x: 41, y: 37 }, { x: 41, y: 43 }, { x: 35, y: 43 }], appearance: { name: 'Orion', gender: 'masc', origin: 'alchemist', skinTone: '#e2e8f0', hairStyle: 'dreads', hairColor: '#22c55e', implant: 'neural_jack', implantColor: '#22c55e', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Orion: "The holographic light fountain is charged by the city’s quantum grid. Mesmerizing."' },
+    { id: 'cit_12', name: 'Echo', x: 40, y: 34, dir: 'SW', speed: 0.041, pauseTicks: 10, waypointIndex: 0, waypoints: [{ x: 40, y: 34 }, { x: 33, y: 34 }, { x: 33, y: 42 }, { x: 40, y: 42 }], appearance: { name: 'Echo', gender: 'fem', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'pixie', hairColor: '#f43f5e', implant: 'visor', implantColor: '#f43f5e', outfitStyle: 'bomber', outfitColor: '#881337', droneCompanion: 'none' }, greeting: 'Echo: "Check the giant holo-billboard across the plaza—they’re running Arasaka stock updates."' },
+  ]);
 
-  ctx.restore();
-}
+  const addFloatingText = useCallback((text: string, color = '#38bdf8') => {
+    floatingTextsRef.current.push({
+      id: Math.random().toString(),
+      text,
+      x: playerRef.current.x,
+      y: playerRef.current.y,
+      color,
+      createdAt: Date.now(),
+    });
+  }, []);
 
-// 6. Ground Steam Grate with rising vapor puffs
-export function drawSteamGrate(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
+      keysPressed.current.add(e.key.toLowerCase());
 
-  // Grate Metal Frame
-  ctx.fillStyle = '#111827';
-  ctx.fillRect(screenX - 14 * z, screenY - 6 * z, 28 * z, 12 * z);
-  ctx.strokeStyle = '#374151';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(screenX - 14 * z, screenY - 6 * z, 28 * z, 12 * z);
-
-  // Slits
-  ctx.strokeStyle = '#00f0ff';
-  for (let s = -10; s <= 10; s += 5) {
-    ctx.beginPath();
-    ctx.moveTo(screenX + s * z, screenY - 4 * z);
-    ctx.lineTo(screenX + s * z, screenY + 4 * z);
-    ctx.stroke();
-  }
-
-  // Rising Steam Puffs
-  for (let p = 0; p < 3; p++) {
-    const steamProgress = ((time * 1.8 + p * 0.33) % 1);
-    const steamY = screenY - 4 * z - steamProgress * 30 * z;
-    const steamX = screenX + Math.sin(time * 3 + p) * 6 * z;
-    const steamRadius = (4 + steamProgress * 12) * z;
-    const steamAlpha = (1 - steamProgress) * 0.35;
-
-    ctx.fillStyle = `rgba(186, 230, 253, ${steamAlpha})`;
-    ctx.beginPath();
-    ctx.arc(steamX, steamY, steamRadius, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  ctx.restore();
-}
-
-// 7. Parked Retro-Futuristic Cyber Sports Car (Right side of reference image)
-export function drawParkedHovercar(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  color = '#8b5cf6',
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Shadow
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 8 * z, 28 * z, 12 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Chassis Body
-  ctx.fillStyle = color;
-  ctx.fillRect(screenX - 22 * z, screenY - 8 * z, 44 * z, 16 * z);
-
-  // Curved Aerodynamic Hood
-  ctx.fillStyle = '#6d28d9';
-  ctx.beginPath();
-  ctx.moveTo(screenX - 22 * z, screenY - 8 * z);
-  ctx.lineTo(screenX - 8 * z, screenY - 18 * z);
-  ctx.lineTo(screenX + 12 * z, screenY - 18 * z);
-  ctx.lineTo(screenX + 22 * z, screenY - 8 * z);
-  ctx.closePath();
-  ctx.fill();
-
-  // Cockpit Tinted Canopy / Glass
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 6 * z, screenY - 16 * z, 16 * z, 7 * z);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(screenX - 4 * z, screenY - 15 * z, 6 * z, 2 * z);
-
-  // Headlights & Tail neon strips
-  ctx.fillStyle = '#fef08a'; // Yellow/white headlights
-  ctx.fillRect(screenX - 20 * z, screenY - 4 * z, 4 * z, 4 * z);
-  ctx.fillStyle = '#ff2a85'; // Pink tail neon
-  ctx.fillRect(screenX + 18 * z, screenY - 4 * z, 4 * z, 3 * z);
-
-  // Hover Repulsor Emitters (Glowing cyan rings instead of wheels)
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 16 * z, screenY + 4 * z, 8 * z, 3 * z);
-  ctx.fillRect(screenX + 8 * z, screenY + 4 * z, 8 * z, 3 * z);
-
-  ctx.restore();
-}
-
-// 8. Hover Surveillance Drone
-export function drawSurveillanceDrone(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  const hoverY = screenY + Math.sin(time * 4) * 3 * z;
-
-  // Drone Shadow on ground
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 16 * z, 8 * z, 4 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Drone Core
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(screenX - 6 * z, hoverY - 4 * z, 12 * z, 8 * z);
-
-  // 4 Quad-Arms
-  ctx.fillStyle = '#475569';
-  ctx.fillRect(screenX - 12 * z, hoverY - 6 * z, 6 * z, 2 * z);
-  ctx.fillRect(screenX + 6 * z, hoverY - 6 * z, 6 * z, 2 * z);
-  ctx.fillRect(screenX - 12 * z, hoverY + 4 * z, 6 * z, 2 * z);
-  ctx.fillRect(screenX + 6 * z, hoverY + 4 * z, 6 * z, 2 * z);
-
-  // Thruster Rotor Rings (glowing cyan & spinning)
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5;
-  const rotorSpin = Math.sin(time * 20);
-  ctx.strokeRect(screenX - 14 * z, hoverY - 8 * z, 5 * z, 2 * z);
-  ctx.strokeRect(screenX + 9 * z, hoverY - 8 * z, 5 * z, 2 * z);
-
-  // Red/Cyan sensor eye
-  ctx.fillStyle = '#ff2a85';
-  ctx.beginPath();
-  ctx.arc(screenX, hoverY, 2 * z, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-// 9. Cyber Street Lamp with Volumetric Cone
-export function drawCyberStreetLamp(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1,
-  color = '#00f0ff'
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Shadow at base
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 2 * z, 6 * z, 3 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Lamp Post Base
-  ctx.fillStyle = '#1e2433';
-  ctx.fillRect(screenX - 3 * z, screenY - 4 * z, 6 * z, 6 * z);
-
-  // Tall Pole
-  ctx.fillStyle = '#334155';
-  ctx.fillRect(screenX - 1.5 * z, screenY - 50 * z, 3 * z, 48 * z);
-
-  // Arm Overhang
-  ctx.fillStyle = '#475569';
-  ctx.fillRect(screenX - 8 * z, screenY - 52 * z, 16 * z, 3 * z);
-
-  // Glowing Lantern Fixtures (Cyan / Pink)
-  ctx.fillStyle = color;
-  ctx.fillRect(screenX - 8 * z, screenY - 49 * z, 4 * z, 3 * z);
-  ctx.fillRect(screenX + 4 * z, screenY - 49 * z, 4 * z, 3 * z);
-
-  // Volumetric Light Cone on Ground
-  const pulse = 0.85 + Math.sin(time * 3) * 0.15;
-  const coneGrad = ctx.createRadialGradient(screenX, screenY, 4 * z, screenX, screenY, 32 * z);
-  coneGrad.addColorStop(0, color === '#00f0ff' ? `rgba(0, 240, 255, ${0.28 * pulse})` : `rgba(255, 42, 133, ${0.28 * pulse})`);
-  coneGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = coneGrad;
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY, 28 * z, 14 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-
-// 10. Cyber Vending Machine
-export function drawCyberVendingMachine(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1,
-  theme: 'drinks' | 'snacks' = 'drinks'
-) {
-  const z = zoom;
-  ctx.save();
-
-  const isSnack = theme === 'snacks';
-  const primaryNeon = isSnack ? '#f59e0b' : '#00f0ff';
-  const headerNeon = isSnack ? '#f97316' : '#ff2a85';
-  const headerLabel = isSnack ? 'CYBER-SNACK' : 'SYNTH-DRINK';
-
-  // Shadow
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 4 * z, 16 * z, 7 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Body Frame
-  ctx.fillStyle = '#111625';
-  ctx.fillRect(screenX - 12 * z, screenY - 37 * z, 24 * z, 39 * z);
-  ctx.strokeStyle = primaryNeon;
-  ctx.lineWidth = 1.5 * z;
-  ctx.strokeRect(screenX - 12 * z, screenY - 37 * z, 24 * z, 39 * z);
-
-  // Glowing Canopy Header
-  ctx.fillStyle = headerNeon;
-  ctx.fillRect(screenX - 10 * z, screenY - 35 * z, 20 * z, 6 * z);
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${Math.round(4.8 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText(headerLabel, screenX, screenY - 30 * z);
-
-  // Glass Display
-  ctx.fillStyle = '#080c18';
-  ctx.fillRect(screenX - 10 * z, screenY - 27 * z, 20 * z, 17 * z);
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.15)';
-  ctx.lineWidth = 1 * z;
-  ctx.strokeRect(screenX - 10 * z, screenY - 27 * z, 20 * z, 17 * z);
-
-  if (isSnack) {
-    // Snack bags & bars
-    const snackColors = ['#ef4444', '#f59e0b', '#10b981', '#ec4899'];
-    for (let row = 0; row < 2; row++) {
-      for (let col = 0; col < 4; col++) {
-        ctx.fillStyle = snackColors[(col + row * 2) % snackColors.length];
-        ctx.fillRect(screenX - 8.5 * z + col * 4.5 * z, screenY - 25 * z + row * 7.5 * z, 3.5 * z, 5 * z);
-        // Little label band
-        ctx.fillStyle = '#ffffff';
-        ctx.fillRect(screenX - 8.5 * z + col * 4.5 * z, screenY - 23 * z + row * 7.5 * z, 3.5 * z, 1.2 * z);
+      if (e.key === 'e' || e.key === 'E' || e.key === ' ') {
+        if (currentPromptRef.current) {
+          e.preventDefault();
+          currentPromptRef.current.action();
+        }
       }
-    }
-  } else {
-    // Drink cans
-    const canColors = ['#00f0ff', '#ff2a85', '#22c55e', '#38bdf8'];
-    for (let row = 0; row < 2; row++) {
-      for (let col = 0; col < 4; col++) {
-        ctx.fillStyle = canColors[(col + row * 2) % canColors.length];
-        ctx.fillRect(screenX - 8 * z + col * 4.5 * z, screenY - 25 * z + row * 7.5 * z, 3 * z, 5.5 * z);
-        // Can rim
-        ctx.fillStyle = '#e2e8f0';
-        ctx.fillRect(screenX - 8 * z + col * 4.5 * z, screenY - 25 * z + row * 7.5 * z, 3 * z, 1 * z);
+    };
+    const handleKeyUp = (e: KeyboardEvent) => keysPressed.current.delete(e.key.toLowerCase());
+
+    window.addEventListener('keydown', handleKeyDown);
+    window.addEventListener('keyup', handleKeyUp);
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown);
+      window.removeEventListener('keyup', handleKeyUp);
+    };
+  }, []);
+
+  useEffect(() => {
+    let animId: number;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return;
+
+    const gameLoop = (time: number) => {
+      try {
+        if (lastTimeRef.current === 0) {
+          lastTimeRef.current = time;
+          return;
+        }
+        
+        let dt = (time - lastTimeRef.current) / 1000;
+        lastTimeRef.current = time;
+        
+        if (dt > 0.1) dt = 0.016;
+        if (dt <= 0) dt = 0.001;
+
+        const timeScale = dt * 60; 
+        tickRef.current += 0.035 * timeScale;
+        const tick = tickRef.current;
+        const now = Date.now();
+
+        const pProps = propsRef.current;
+        const { gameState } = pProps;
+        
+        if (!gameState) return;
+
+        const currentHouse = gameState.houses?.find(h => h.id === gameState.currentHouseId) || gameState.houses?.[0];
+
+        floatingTextsRef.current = floatingTextsRef.current.filter(t => now - t.createdAt < 1800);
+
+        if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
+          if (Math.random() < (gameState.weather === 'glitch_storm' ? 0.35 : 0.2) * timeScale) {
+            ripplesRef.current.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, progress: 0 });
+          }
+          ripplesRef.current.forEach(r => { r.progress += 0.045 * timeScale; });
+          ripplesRef.current = ripplesRef.current.filter(r => r.progress < 1.0);
+        } else {
+          ripplesRef.current = [];
+        }
+
+        if (gameState.weather === 'glitch_storm') {
+          if (now > nextLightningTimeRef.current) {
+            lightningFlashRef.current = 1.0;
+            nextLightningTimeRef.current = now + 3500 + Math.random() * 4500;
+          } else {
+            lightningFlashRef.current = Math.max(0, lightningFlashRef.current - 0.07 * timeScale);
+          }
+        } else {
+          lightningFlashRef.current = 0;
+        }
+
+        let dx = 0;
+        let dy = 0;
+        const speed = 0.085 * timeScale;
+
+        if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) { dx -= speed; dy -= speed; }
+        if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) { dx += speed; dy += speed; }
+        if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) { dx -= speed; dy += speed; }
+        if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) { dx += speed; dy -= speed; }
+
+        const isWalking = dx !== 0 || dy !== 0;
+        playerRef.current.isMoving = isWalking;
+
+        if (isWalking) {
+          if (now - lastStepSoundTimeRef.current > 320) {
+            sound.playStep();
+            lastStepSoundTimeRef.current = now;
+          }
+
+          if (dx > 0 && dy >= 0) playerRef.current.dir = 'SE';
+          else if (dx < 0 && dy <= 0) playerRef.current.dir = 'NW';
+          else if (dy > 0 && dx <= 0) playerRef.current.dir = 'SW';
+          else if (dy < 0 && dx >= 0) playerRef.current.dir = 'NE';
+
+          let nextX = playerRef.current.x + dx;
+          let nextY = playerRef.current.y + dy;
+
+          if (gameState.currentScene === 'town') {
+            nextX = Math.max(1, Math.min(TOWN_SIZE - 2, nextX));
+            nextY = Math.max(1, Math.min(TOWN_SIZE - 2, nextY));
+          } else if (gameState.currentScene === 'interior') {
+            const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
+            const maxW = est ? est.interiorSize.width : 8;
+            const maxH = est ? est.interiorSize.height : 8;
+            nextX = Math.max(0.5, Math.min(maxW - 0.8, nextX));
+            nextY = Math.max(0.5, Math.min(maxH - 0.8, nextY));
+          } else if (currentHouse) {
+            nextX = Math.max(0.5, Math.min(currentHouse.gridWidth - 0.8, nextX));
+            nextY = Math.max(0.5, Math.min(currentHouse.gridHeight - 0.8, nextY));
+          }
+
+          playerRef.current.x = nextX;
+          playerRef.current.y = nextY;
+        }
+
+        const playerScreen = {
+          x: (playerRef.current.x - playerRef.current.y) * (TILE_WIDTH / 2),
+          y: (playerRef.current.x + playerRef.current.y) * (TILE_HEIGHT / 2),
+        };
+        cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * (0.1 * timeScale);
+        cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * (0.1 * timeScale);
+
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        const atmosphere = getWeatherAtmosphere(gameState.weather, gameState.timeHour);
+        const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
+        skyGrad.addColorStop(0, atmosphere.skyGradTop);
+        skyGrad.addColorStop(1, atmosphere.skyGradBottom);
+        ctx.fillStyle = skyGrad;
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        if (gameState.weather === 'cyber_clear') {
+          ctx.fillStyle = '#ffffff';
+          for (let i = 0; i < 40; i++) {
+            const sx = ((i * 137) % canvas.width);
+            const sy = ((i * 89) % Math.max(120, canvas.height * 0.45));
+            const twinkle = (Math.sin(tick * 2 + i) + 1) / 2;
+            ctx.globalAlpha = 0.2 + twinkle * 0.65;
+            ctx.fillRect(sx, sy, 1.5, 1.5);
+          }
+          ctx.globalAlpha = 1.0;
+        }
+
+        let trafficState: TrafficLightState = 'avenue_green';
+        if (gameState.currentScene === 'town') {
+          const trafficSec = (now / 1000) % 16;
+          if (trafficSec < 6) trafficState = 'avenue_green';
+          else if (trafficSec < 8) trafficState = 'avenue_yellow';
+          else if (trafficSec < 14) trafficState = 'boulevard_green';
+          else trafficState = 'boulevard_yellow';
+
+          const isAvenueOpen = trafficState === 'avenue_green';
+          const isBoulevardOpen = trafficState === 'boulevard_green';
+
+          trafficVehiclesRef.current.forEach(veh => {
+            let shouldStop = false;
+            const adjustedSpeed = veh.speed * timeScale;
+            if (veh.lane === 'avenue_south') {
+              if (!isAvenueOpen && veh.y >= 17.5 && veh.y <= 20.2) shouldStop = true;
+              if (trafficVehiclesRef.current.find(o => o.id !== veh.id && o.lane === 'avenue_south' && o.y > veh.y && o.y - veh.y < 4.0)) shouldStop = true;
+              if (!shouldStop) { veh.y += adjustedSpeed; if (veh.y > TOWN_SIZE + 2) veh.y = -2; }
+            } else if (veh.lane === 'avenue_north') {
+              if (!isAvenueOpen && veh.y <= 27.5 && veh.y >= 24.8) shouldStop = true;
+              if (trafficVehiclesRef.current.find(o => o.id !== veh.id && o.lane === 'avenue_north' && o.y < veh.y && veh.y - o.y < 4.0)) shouldStop = true;
+              if (!shouldStop) { veh.y -= adjustedSpeed; if (veh.y < -2) veh.y = TOWN_SIZE + 2; }
+            } else if (veh.lane === 'boulevard_east') {
+              if (!isBoulevardOpen && veh.x >= 17.5 && veh.x <= 20.2) shouldStop = true;
+              if (trafficVehiclesRef.current.find(o => o.id !== veh.id && o.lane === 'boulevard_east' && o.x > veh.x && o.x - veh.x < 4.0)) shouldStop = true;
+              if (!shouldStop) { veh.x += adjustedSpeed; if (veh.x > TOWN_SIZE + 2) veh.x = -2; }
+            } else if (veh.lane === 'boulevard_west') {
+              if (!isBoulevardOpen && veh.x <= 27.5 && veh.x >= 24.8) shouldStop = true;
+              if (trafficVehiclesRef.current.find(o => o.id !== veh.id && o.lane === 'boulevard_west' && o.x < veh.x && veh.x - o.x < 4.0)) shouldStop = true;
+              if (!shouldStop) { veh.x -= adjustedSpeed; if (veh.x < -2) veh.x = TOWN_SIZE + 2; }
+            }
+          });
+
+          citizensRef.current.forEach(cit => {
+            if (cit.pauseTicks > 0) { cit.pauseTicks -= timeScale; return; }
+            const target = cit.waypoints[cit.waypointIndex];
+            const dist = Math.hypot(target.x - cit.x, target.y - cit.y);
+
+            const wantsToCrossAvenue = ((cit.x <= 20.8 && target.x > 20.8) || (cit.x >= 24.2 && target.x < 24.2)) && ((cit.y >= 18.5 && cit.y <= 21) || (cit.y >= 24.5 && cit.y <= 27));
+            if (wantsToCrossAvenue && (trafficState === 'avenue_green' || trafficState === 'avenue_yellow')) { cit.pauseTicks = 20; return; }
+            const wantsToCrossBoulevard = ((cit.y <= 20.8 && target.y > 20.8) || (cit.y >= 24.2 && target.y < 24.2)) && ((cit.x >= 18.5 && cit.x <= 21) || (cit.x >= 24.5 && cit.x <= 27));
+            if (wantsToCrossBoulevard && (trafficState === 'boulevard_green' || trafficState === 'boulevard_yellow')) { cit.pauseTicks = 20; return; }
+
+            if (dist < 0.25) {
+              cit.waypointIndex = (cit.waypointIndex + 1) % cit.waypoints.length;
+              cit.pauseTicks = Math.floor(35 + Math.random() * 45);
+            } else {
+              const angle = Math.atan2(target.y - cit.y, target.x - cit.x);
+              const cdx = Math.cos(angle) * cit.speed * timeScale;
+              const cdy = Math.sin(angle) * cit.speed * timeScale;
+              cit.x += cdx; cit.y += cdy;
+              if (cdx > 0 && cdy >= 0) cit.dir = 'SE'; else if (cdx < 0 && cdy <= 0) cit.dir = 'NW'; else if (cdy > 0 && cdx <= 0) cit.dir = 'SW'; else if (cdy < 0 && cdx >= 0) cit.dir = 'NE';
+            }
+          });
+
+          Object.values(gameState.npcs || {}).forEach(npc => {
+            if (!npc) return;
+            let walker = storyNPCWalkersRef.current[npc.id];
+            const slot = getNPCScheduleForHour(npc, gameState.timeHour);
+            const targetX = slot ? slot.x : npc.x;
+            const targetY = slot ? slot.y : npc.y;
+
+            if (!walker) {
+              walker = { id: npc.id, currentX: targetX, currentY: targetY, targetX: targetX, targetY: targetY, dir: 'SE', isWalking: false, speed: 0.045, pauseTicks: 0, currentSlot: slot, statusMessage: slot?.activity || npc.role };
+              storyNPCWalkersRef.current[npc.id] = walker;
+            } else {
+              if (walker.targetX !== targetX || walker.targetY !== targetY) { walker.targetX = targetX; walker.targetY = targetY; walker.currentSlot = slot; }
+            }
+            const cdx = walker.targetX - walker.currentX;
+            const cdy = walker.targetY - walker.currentY;
+            const dist = Math.hypot(cdx, cdy);
+            if (dist > 0.18) {
+              walker.isWalking = true;
+              const step = Math.min(dist, walker.speed * timeScale);
+              walker.currentX += (cdx / dist) * step;
+              walker.currentY += (cdy / dist) * step;
+              if (cdx > 0 && cdy >= 0) walker.dir = 'SE'; else if (cdx < 0 && cdy <= 0) walker.dir = 'NW'; else if (cdy > 0 && cdx <= 0) walker.dir = 'SW'; else if (cdy < 0 && cdx >= 0) walker.dir = 'NE';
+              walker.statusMessage = `Heading to ${slot?.locationName || 'destination'}`;
+            } else {
+              walker.isWalking = false;
+              walker.currentX = walker.targetX;
+              walker.currentY = walker.targetY;
+              walker.statusMessage = slot?.activity || npc.role;
+            }
+          });
+        }
+
+        if (gameState.currentScene === 'town') {
+          for (let x = 0; x < TOWN_SIZE; x++) {
+            for (let y = 0; y < TOWN_SIZE; y++) {
+              const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
+              if (screen.x < -64 || screen.x > canvas.width + 64 || screen.y < -64 || screen.y > canvas.height + 64) continue;
+              const isAvenue = x >= 21 && x <= 24; const isBoulevard = y >= 21 && y <= 24; const isRoad = isAvenue || isBoulevard; const isIntersection = isAvenue && isBoulevard;
+              const isCrosswalk = (isAvenue && ((y >= 19 && y <= 20) || (y >= 25 && y <= 26))) || (isBoulevard && ((x >= 19 && x <= 20) || (x >= 25 && x <= 26)));
+              const isCurb = (x === 20 || x === 25 || y === 20 || y === 25) && !isRoad;
+              let fillColor = '#101524'; let strokeColor = 'rgba(28, 38, 59, 0.45)';
+              if (gameState.weather === 'acid_fog') { fillColor = '#0d1611'; strokeColor = 'rgba(163, 230, 53, 0.16)'; } else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') { fillColor = '#080d1a'; strokeColor = 'rgba(0, 240, 255, 0.2)'; }
+
+              if (isRoad) {
+                fillColor = isIntersection ? '#060913' : '#080c18'; strokeColor = 'rgba(30, 41, 59, 0.35)';
+                drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
+                if ((x === 22 || x === 23) && isAvenue && !isCrosswalk && !isIntersection && y % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.35)', '#00f0ff');
+                else if ((y === 22 || y === 23) && isBoulevard && !isCrosswalk && !isIntersection && x % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(245, 158, 11, 0.35)', '#f59e0b');
+                if (isCrosswalk && (x + y) % 2 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
+              } else {
+                if (isCurb) { fillColor = '#1c2438'; strokeColor = 'rgba(255, 42, 133, 0.5)'; }
+                else if (x < 20 && y < 20) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.25)'; }
+                else if (x > 25 && y < 20) { const isCQ = x >= 30 && x <= 38 && y >= 8 && y <= 16; fillColor = isCQ ? ((x + y) % 2 === 0 ? '#182035' : '#141a2c') : '#111625'; strokeColor = isCQ ? 'rgba(255, 42, 133, 0.35)' : 'rgba(0, 240, 255, 0.2)'; }
+                else if (x < 20 && y > 25) { fillColor = (x + y) % 2 === 0 ? '#121727' : '#0e1320'; strokeColor = 'rgba(56, 189, 248, 0.25)'; }
+                else if (x > 25 && y > 25) { fillColor = (x + y) % 2 === 0 ? '#161d31' : '#13192a'; strokeColor = 'rgba(168, 85, 247, 0.3)'; }
+                drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
+                if ((gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') && (x + y) % 4 === 0) {
+                  const sheen = (Math.sin(tick * 3.5 + x * 2 + y) + 1) / 2;
+                  drawIsoTile(ctx, screen.x, screen.y, `rgba(0, 240, 255, ${0.08 + sheen * 0.16})`);
+                }
+              }
+            }
+          }
+        } else if (gameState.currentScene === 'interior') {
+          const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
+          const gw = est ? est.interiorSize.width : 8;
+          const gh = est ? est.interiorSize.height : 8;
+          for (let x = 0; x < gw; x++) {
+            for (let y = 0; y < gh; y++) {
+              const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
+              let fillColor = '#101524'; let strokeColor = 'rgba(28, 38, 59, 0.45)';
+              if (est?.id === 'ramen_bistro') { fillColor = (x + y) % 2 === 0 ? '#261214' : '#1a0b0d'; strokeColor = 'rgba(239, 68, 68, 0.4)'; }
+              else if (est?.id === 'ripperdoc_clinic') { fillColor = (x + y) % 2 === 0 ? '#0b1928' : '#08121f'; strokeColor = 'rgba(0, 240, 255, 0.35)'; }
+              else if (est?.id === 'robotics_garage') { fillColor = (x + y) % 2 === 0 ? '#241a0d' : '#1a1309'; strokeColor = 'rgba(245, 158, 11, 0.4)'; }
+              else if (est?.id === 'netrunner_den') { fillColor = (x + y) % 2 === 0 ? '#1b0e2b' : '#130920'; strokeColor = 'rgba(168, 85, 247, 0.45)'; }
+              else if (est?.id === 'haute_boutique') { fillColor = (x + y) % 2 === 0 ? '#260e1d' : '#1c0915'; strokeColor = 'rgba(236, 72, 153, 0.4)'; }
+              drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
+            }
+          }
+        } else if (currentHouse) {
+          for (let x = 0; x < currentHouse.gridWidth; x++) {
+            for (let y = 0; y < currentHouse.gridHeight; y++) {
+              const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
+              let fillColor = '#1e293b'; let strokeColor = 'rgba(51, 65, 85, 0.5)';
+              if (currentHouse.floorTheme === 'tatami') { fillColor = (x + y) % 2 === 0 ? '#3f382b' : '#332d22'; strokeColor = '#574c38'; }
+              else if (currentHouse.floorTheme === 'hologrid') { fillColor = '#0b192c'; strokeColor = 'rgba(6, 182, 212, 0.45)'; }
+              else if (currentHouse.floorTheme === 'cyberwood') { fillColor = (x + y) % 2 === 0 ? '#271c19' : '#1f1513'; strokeColor = '#452c25'; }
+              else if (currentHouse.floorTheme === 'goldchrome') { fillColor = (x + y) % 2 === 0 ? '#3b2f0e' : '#2b2207'; strokeColor = 'rgba(234, 179, 8, 0.4)'; }
+              if (pProps.isDecorateMode && Math.floor(mouseIsoRef.current.x) === x && Math.floor(mouseIsoRef.current.y) === y) { fillColor = 'rgba(6, 182, 212, 0.4)'; strokeColor = '#06b6d4'; }
+              drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
+            }
+          }
+        }
+
+        interface DepthItem { depth: number; draw: () => void; }
+        const renderQueue: DepthItem[] = [];
+
+        if (gameState.currentScene === 'town') {
+          renderQueue.push({ depth: 4 + 2, draw: () => { const s = isoToScreen(4, 2, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'QUANTUM CORP', 6, tick, 1, '#00f0ff'); } });
+          renderQueue.push({ depth: 4 + 8, draw: () => { const s = isoToScreen(4, 8, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(245, 158, 11, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'bazaar', 1); } });
+          renderQueue.push({ depth: 4 + 15, draw: () => { const s = isoToScreen(4, 15, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'clinic', 1); } });
+          renderQueue.push({ depth: 10 + 6, draw: () => { const s = isoToScreen(10, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(239, 68, 68, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'ramen', 1); } });
+          renderQueue.push({ depth: 10 + 14, draw: () => { const s = isoToScreen(10, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(192, 132, 252, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'blackice', 1); } });
+          renderQueue.push({ depth: 16 + 6, draw: () => { const s = isoToScreen(16, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(234, 179, 8, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'realty', 1); } });
+          renderQueue.push({ depth: 16 + 14, draw: () => { const s = isoToScreen(16, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(16, 185, 129, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'greenhouse', 1); } });
+          renderQueue.push({ depth: 8 + 11, draw: () => { const s = isoToScreen(8, 11, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(0, 240, 255, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'drinks'); } });
+
+          [{ x: 6, y: 5, color: '#00f0ff' }, { x: 6, y: 12, color: '#ff2a85' }, { x: 14, y: 5, color: '#00f0ff' }, { x: 14, y: 12, color: '#f59e0b' }].forEach(l => {
+            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+          });
+          [{ x: 10, y: 10, student: false }, { x: 14, y: 9, student: true }].forEach(b => {
+            renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
+          });
+          renderQueue.push({ depth: 7 + 7, draw: () => { const s = isoToScreen(7, 7, cameraRef.current, canvas.width, canvas.height); drawTrashBinAndHydrant(ctx, s.x, s.y, 1); } });
+
+          renderQueue.push({ depth: 38 + 7, draw: () => { const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x + 35, s.y - 40, 65, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawVolumetricLight(ctx, s.x - 40, s.y - 95, 60, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawAcademyComplex(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 33 + 13, draw: () => { const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloLectureStage(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 28 + 7, draw: () => { const s = isoToScreen(28, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
+          renderQueue.push({ depth: 28 + 14, draw: () => { const s = isoToScreen(28, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
+
+          [{ x: 33, y: 6 }, { x: 38, y: 16 }, { x: 42, y: 11 }].forEach(t => {
+            renderQueue.push({ depth: t.x + t.y, draw: () => { const s = isoToScreen(t.x, t.y, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 35, 40, 'rgba(0, 245, 212, 0.28)', gameState.weather); drawCyberTree(ctx, s.x, s.y, tick, 1); } });
+          });
+
+          renderQueue.push({ depth: 29 + 11, draw: () => { const s = isoToScreen(29, 11, cameraRef.current, canvas.width, canvas.height); drawCampusSignpost(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 40 + 14, draw: () => { const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height); ctx.fillStyle = '#f59e0b'; ctx.fillRect(s.x - 7, s.y - 16 + Math.sin(tick * 4) * 2, 14, 12); if (Math.random() > 0.6) { ctx.fillStyle = '#ffffff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 22, 2, 2); ctx.fillStyle = '#00f0ff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 18, 2, 2); } } });
+
+          [{ x: 27, y: 5, color: '#00f0ff' }, { x: 35, y: 5, color: '#ff2a85' }, { x: 27, y: 17, color: '#00f0ff' }].forEach(l => {
+            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+          });
+
+          renderQueue.push({ depth: 5 + 28, draw: () => { const s = isoToScreen(5, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'ARASAKA MEGAPOD', 5, tick, 1, '#ef4444'); } });
+          renderQueue.push({ depth: 14 + 28, draw: () => { const s = isoToScreen(14, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'CAPSULE RESIDENCE', 4, tick, 1, '#38bdf8'); } });
+          renderQueue.push({ depth: 9 + 28, draw: () => { const s = isoToScreen(9, 28, cameraRef.current, canvas.width, canvas.height); drawPedestrianSkybridge(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 7 + 36, draw: () => { const s = isoToScreen(7, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(139, 92, 246, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#8b5cf6', 1); } });
+          renderQueue.push({ depth: 14 + 36, draw: () => { const s = isoToScreen(14, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#06b6d4', 1); } });
+          renderQueue.push({ depth: 10 + 41, draw: () => { const s = isoToScreen(10, 41, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(245, 158, 11, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'snacks'); } });
+
+          [{ x: 6, y: 33, color: '#38bdf8' }, { x: 14, y: 33, color: '#ff2a85' }, { x: 6, y: 42, color: '#38bdf8' }].forEach(l => {
+            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+          });
+          renderQueue.push({ depth: 11 + 35, draw: () => { const s = isoToScreen(11, 35, cameraRef.current, canvas.width, canvas.height); drawSteamGrate(ctx, s.x, s.y, tick, 1); } });
+
+          renderQueue.push({ depth: 35 + 29, draw: () => { const s = isoToScreen(35, 29, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 55, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawMetroStation(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 33 + 38, draw: () => { const s = isoToScreen(33, 38, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 50, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawCyberFountain(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 42 + 32, draw: () => { const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 50, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloBillboard(ctx, s.x, s.y, tick, 1); } });
+          renderQueue.push({ depth: 42 + 39, draw: () => { const s = isoToScreen(42, 39, cameraRef.current, canvas.width, canvas.height); drawCyberVendingMachine(ctx, s.x - 14, s.y, tick, 1, 'drinks'); drawCyberVendingMachine(ctx, s.x + 14, s.y, tick, 1, 'snacks'); } });
+
+          [{ x: 28, y: 36, student: false }, { x: 38, y: 40, student: true }].forEach(b => {
+            renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
+          });
+          [{ x: 27, y: 31, color: '#a855f7' }, { x: 38, y: 31, color: '#00f0ff' }, { x: 27, y: 42, color: '#a855f7' }].forEach(l => {
+            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+          });
+
+          const trafficSecNow = (now / 1000) % 16;
+          const avenueLightNow = trafficSecNow < 6 ? 'green' : trafficSecNow < 8 ? 'yellow' : 'red';
+          const boulevardLightNow = (trafficSecNow >= 8 && trafficSecNow < 14) ? 'green' : (trafficSecNow >= 14 ? 'yellow' : 'red');
+          const avenueWalk = boulevardLightNow === 'green';
+          const boulevardWalk = avenueLightNow === 'green';
+
+          [{ x: 20, y: 20, l1: avenueLightNow, w: boulevardWalk }, { x: 25, y: 20, l1: boulevardLightNow, w: avenueWalk }, { x: 20, y: 25, l1: boulevardLightNow, w: avenueWalk }, { x: 25, y: 25, l1: avenueLightNow, w: boulevardWalk }].forEach(post => {
+            renderQueue.push({ depth: post.x + post.y, draw: () => { const s = isoToScreen(post.x, post.y, cameraRef.current, canvas.width, canvas.height); drawTrafficLightSignal(ctx, s.x, s.y, post.l1 as any, post.w, 1); } });
+          });
+
+          const droneIsoX = 22.5 + Math.sin(tick * 0.7) * 4.5;
+          const droneIsoY = 22.5 + Math.cos(tick * 0.7) * 4.5;
+          renderQueue.push({ depth: Math.floor(droneIsoX + droneIsoY) + 1, draw: () => { const s = isoToScreen(droneIsoX, droneIsoY, cameraRef.current, canvas.width, canvas.height); drawSurveillanceDrone(ctx, s.x, s.y - 32, tick, 1); } });
+
+          trafficVehiclesRef.current.forEach(veh => {
+            renderQueue.push({ depth: veh.x + veh.y, draw: () => { const s = isoToScreen(veh.x, veh.y, cameraRef.current, canvas.width, canvas.height); drawMovingTrafficVehicle(ctx, s.x, s.y, veh.type, veh.dir, tick, 1); } });
+          });
+
+          citizensRef.current.forEach(cit => {
+            renderQueue.push({ depth: cit.x + cit.y, draw: () => { const s = isoToScreen(cit.x, cit.y, cameraRef.current, canvas.width, canvas.height); drawCharacter(ctx, s.x, s.y, cit.appearance, cit.dir, cit.pauseTicks <= 0, tick, 1); } });
+          });
+
+          Object.values(gameState.npcs || {}).forEach(npc => {
+            if (!npc) return;
+            const walker = storyNPCWalkersRef.current[npc.id] || { id: npc.id, currentX: npc.x, currentY: npc.y, targetX: npc.x, targetY: npc.y, dir: 'SE', isWalking: false, speed: 0.045, pauseTicks: 0, currentSlot: getNPCScheduleForHour(npc, gameState.timeHour), statusMessage: npc.role };
+            const posX = walker.currentX;
+            const posY = walker.currentY;
+
+            renderQueue.push({
+              depth: posX + posY,
+              draw: () => {
+                const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
+                drawCharacter(ctx, s.x, s.y, { 
+                  name: npc.name?.split(' ')[0] || 'NPC', 
+                  skinTone: npc.avatarStyle?.skin || '#fbcfe8', 
+                  hairStyle: npc.avatarStyle?.hairStyle || 'slick', 
+                  hairColor: npc.avatarStyle?.hair || '#00f0ff', 
+                  implant: npc.portraitImplant || 'visor', 
+                  implantColor: npc.portraitColor || '#00f0ff', 
+                  outfitStyle: npc.avatarStyle?.outfit || 'duster', 
+                  outfitColor: npc.portraitColor || '#0f172a' 
+                }, walker.dir, walker.isWalking, tick, 1);
+
+                const distToPlayer = Math.hypot(playerRef.current.x - posX, playerRef.current.y - posY);
+                if (distToPlayer < 7.5) {
+                  ctx.save();
+                  ctx.font = 'bold 9px monospace';
+                  const nameText = npc.name?.split(' ')[0] || 'NPC';
+                  const roleText = walker.isWalking ? '🚶 Commuting' : (walker.currentSlot ? walker.currentSlot.timeLabel : npc.role);
+                  ctx.textAlign = 'center';
+                  const badgeWidth = Math.max(ctx.measureText(nameText).width, ctx.measureText(roleText).width) + 16;
+                  const badgeY = s.y - 48;
+
+                  ctx.fillStyle = 'rgba(6, 11, 25, 0.88)';
+                  ctx.strokeStyle = walker.isWalking ? '#f59e0b' : (npc.portraitColor || '#00f0ff');
+                  ctx.lineWidth = 1;
+                  ctx.beginPath();
+                  ctx.roundRect(s.x - badgeWidth / 2, badgeY - 12, badgeWidth, 20, 4);
+                  ctx.fill();
+                  ctx.stroke();
+
+                  ctx.fillStyle = npc.portraitColor || '#00f0ff';
+                  ctx.fillText(nameText, s.x, badgeY - 2);
+                  ctx.font = '7.5px monospace';
+                  ctx.fillStyle = walker.isWalking ? '#fbbf24' : '#94a3b8';
+                  ctx.fillText(roleText, s.x, badgeY + 6);
+
+                  if (distToPlayer < 3.5 && walker.currentSlot) {
+                    const actText = walker.isWalking ? `En route: ${walker.currentSlot.locationName}` : walker.currentSlot.activity;
+                    ctx.font = '8px monospace';
+                    const actWidth = ctx.measureText(actText).width + 12;
+                    const bubbleY = s.y - 70;
+                    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
+                    ctx.strokeStyle = '#00f0ff';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.roundRect(s.x - actWidth / 2, bubbleY - 9, actWidth, 16, 4);
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.fillStyle = '#00f0ff';
+                    ctx.fillText(actText, s.x, bubbleY + 2);
+                  }
+                  ctx.restore();
+                }
+              },
+            });
+          });
+        } else if (gameState.currentScene === 'interior') {
+          const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
+          if (est) {
+            est.placedFurniture?.forEach(item => {
+              const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
+              if (!furnDef) return;
+              renderQueue.push({ depth: item.x + item.y, draw: () => { const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height); drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1); } });
+            });
+
+            const npc = gameState.npcs?.[est.npcId];
+            if (npc) {
+              renderQueue.push({
+                depth: 3 + 2,
+                draw: () => {
+                  const s = isoToScreen(3, 2, cameraRef.current, canvas.width, canvas.height);
+                  drawCharacter(ctx, s.x, s.y, { name: npc.name, skinTone: npc.avatarStyle?.skin || '#fbd0b4', hairStyle: (npc.avatarStyle?.hairStyle as any) || 'slick', hairColor: npc.portraitHair || '#00f0ff', implant: (npc.portraitImplant as any) || 'visor', implantColor: npc.portraitColor || '#00f0ff', outfitStyle: (npc.avatarStyle?.outfit as any) || 'duster', outfitColor: npc.portraitColor || '#38bdf8', droneCompanion: 'none' }, 'SE', false, tick, 1);
+                  ctx.save();
+                  ctx.textAlign = 'center';
+                  ctx.font = 'bold 9px "Chakra Petch", sans-serif';
+                  ctx.fillStyle = npc.portraitColor || '#00f0ff';
+                  ctx.fillText(npc.name, s.x, s.y - 48);
+                  ctx.font = '8px monospace';
+                  ctx.fillStyle = '#fbbf24';
+                  ctx.fillText(`★ ${npc.role}`, s.x, s.y - 36);
+                  ctx.restore();
+                },
+              });
+            }
+
+            const exitX = est.interiorSize.width - 1;
+            const exitY = est.interiorSize.height - 1;
+            renderQueue.push({
+              depth: exitX + exitY + 0.1,
+              draw: () => {
+                const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
+                ctx.fillStyle = '#ef4444';
+                ctx.fillRect(s.x - 14, s.y - 22, 28, 22);
+                ctx.fillStyle = '#ffffff';
+                ctx.font = '700 8px "Chakra Petch", sans-serif';
+                ctx.textAlign = 'center';
+                ctx.fillText('SAIR', s.x, s.y - 12);
+                ctx.fillText('NEOPOLIS', s.x, s.y - 4);
+              },
+            });
+          }
+        } else if (currentHouse) {
+          currentHouse.placedFurniture?.forEach(item => {
+            const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
+            if (!furnDef) return;
+            renderQueue.push({
+              depth: item.x + item.y,
+              draw: () => {
+                const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height);
+                const isSelected = pProps.selectedPlacedId === item.instanceId;
+                drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1);
+                if (isSelected) {
+                  ctx.strokeStyle = '#06b6d4';
+                  ctx.lineWidth = 2;
+                  ctx.strokeRect(s.x - 20, s.y - 24, 40, 28);
+                }
+              },
+            });
+          });
+
+          const exitX = currentHouse.gridWidth - 1;
+          const exitY = currentHouse.gridHeight - 1;
+          renderQueue.push({
+            depth: exitX + exitY + 0.1,
+            draw: () => {
+              const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
+              ctx.fillStyle = '#ef4444';
+              ctx.fillRect(s.x - 12, s.y - 20, 24, 20);
+              ctx.fillStyle = '#ffffff';
+              ctx.font = '700 8px "Chakra Petch", sans-serif';
+              ctx.textAlign = 'center';
+              ctx.fillText('EXIT TO CITY', s.x, s.y - 12);
+            },
+          });
+        }
+
+        renderQueue.push({
+          depth: playerRef.current.x + playerRef.current.y,
+          draw: () => {
+            const s = isoToScreen(playerRef.current.x, playerRef.current.y, cameraRef.current, canvas.width, canvas.height);
+            drawCharacter(
+              ctx, s.x, s.y,
+              {
+                name: gameState.player?.name || 'Player',
+                skinTone: gameState.player?.skinTone || '#fbcfe8',
+                hairStyle: gameState.equippedCosmetics?.hairStyle || gameState.player?.hairStyle || 'slick',
+                hairColor: gameState.equippedCosmetics?.hairColor || gameState.player?.hairColor || '#00f0ff',
+                implant: gameState.equippedCosmetics?.implant || gameState.player?.implant || 'visor',
+                implantColor: gameState.player?.implantColor || '#00f0ff',
+                outfitStyle: gameState.equippedCosmetics?.outfitStyle || gameState.player?.outfitStyle || 'duster',
+                outfitColor: gameState.equippedCosmetics?.outfitColor || gameState.player?.outfitColor || '#0f172a',
+                droneCompanion: (gameState.equippedCosmetics?.drone as any) || gameState.player?.droneCompanion || 'none',
+              },
+              playerRef.current.dir,
+              playerRef.current.isMoving,
+              tick,
+              1
+            );
+          },
+        });
+
+        renderQueue.sort((a, b) => a.depth - b.depth);
+        renderQueue.forEach(item => item.draw());
+
+        if (pProps.isDecorateMode && pProps.selectedCatalogItem && currentHouse) {
+          const mx = Math.floor(mouseIsoRef.current.x);
+          const my = Math.floor(mouseIsoRef.current.y);
+          if (mx >= 0 && mx < currentHouse.gridWidth && my >= 0 && my < currentHouse.gridHeight) {
+            const s = isoToScreen(mx + pProps.selectedCatalogItem.width / 2, my + pProps.selectedCatalogItem.height / 2, cameraRef.current, canvas.width, canvas.height);
+            ctx.save();
+            ctx.globalAlpha = 0.65;
+            drawFurniture(ctx, s.x, s.y, pProps.selectedCatalogItem, 0, 1);
+            ctx.restore();
+          }
+        }
+
+        drawWeatherOverlay(ctx, canvas.width, canvas.height, tick, gameState.weather, lightningFlashRef.current, ripplesRef.current, gameState.timeHour);
+
+        // =========================================================================
+        // PIPELINE GRÁFICO (SHADERS DE POST-PROCESSING)
+        // =========================================================================
+        const glitchIntensity = (gameState.weather === 'glitch_storm') ? 6 : 2;
+        applyChromaticAberration(ctx, canvas.width, canvas.height, glitchIntensity);
+        drawCRTOverlay(ctx, canvas.width, canvas.height, tick);
+        // =========================================================================
+
+        floatingTextsRef.current.forEach(ft => {
+          const age = now - ft.createdAt;
+          const ageRatio = age / 1800;
+          const s = isoToScreen(ft.x, ft.y, cameraRef.current, canvas.width, canvas.height);
+          const floatY = s.y - 35 - ageRatio * 45;
+
+          ctx.save();
+          ctx.globalAlpha = Math.max(0, 1 - ageRatio);
+          ctx.font = 'bold 12px "Press Start 2P", monospace';
+          ctx.textAlign = 'center';
+          ctx.fillStyle = ft.color;
+          ctx.shadowColor = ft.color;
+          ctx.shadowBlur = 8;
+          ctx.fillText(ft.text, s.x, floatY);
+          ctx.restore();
+        });
+
+        let foundPrompt = null;
+        const px = playerRef.current.x;
+        const py = playerRef.current.y;
+
+        if (gameState.currentScene === 'town') {
+          Object.values(gameState.npcs || {}).forEach(npc => {
+            if (!npc) return;
+            const walker = storyNPCWalkersRef.current[npc.id];
+            const posX = walker ? walker.currentX : npc.x;
+            const posY = walker ? walker.currentY : npc.y;
+            if (Math.hypot(px - posX, py - posY) < 2.2 && !foundPrompt) {
+              const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = {
+                text: `[E] Talk with ${npc.name} (${walker?.isWalking ? `Commuting to ${walker.currentSlot?.locationName || 'Station'}` : (walker?.currentSlot?.activity || npc.role)})`,
+                action: () => pProps.onInteractNPC({ ...npc, locationName: walker?.currentSlot?.locationName || npc.locationName, currentActivity: walker?.currentSlot?.activity, x: posX, y: posY }),
+                x: s.x, y: s.y - 50,
+              };
+            }
+          });
+
+          if (!foundPrompt) {
+            const storefronts = [
+              { x: 10, y: 7, label: "Entrar: Bistrô de Ramen do Chef Bao", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ramen_bistro'); } },
+              { x: 4, y: 15, label: 'Entrar: Clínica Ripperdoc do Dex', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ripperdoc_clinic'); } },
+              { x: 40, y: 14, label: "Entrar: Oficina de Drones da Sparks", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('robotics_garage'); } },
+              { x: 14, y: 6, label: 'Entrar: Santuário Netrunner da Nyx', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('netrunner_den'); } },
+              { x: 38, y: 35, label: 'Entrar: Boutique de Luxo do Vane', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('haute_boutique'); } },
+              { x: 4, y: 8, label: 'Glitch & Grind Bazaar (Móveis)', action: () => pProps.onOpenStoreTab?.('furniture') },
+              { x: 10, y: 14, label: 'The Black Ice Arcade (-10⚡)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Arcade Game')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } pProps.onInteractArcade(); } },
+              { x: 16, y: 6, label: 'Apex Real Estate (Imóveis)', action: () => pProps.onOpenStoreTab?.('realty') },
+              { x: 16, y: 14, label: 'Colheita Flora-Synth (-10⚡, +45 CR)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Colheita Hidropônica')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } sound.playCredit(); addFloatingText('+45 CR', '#10b981'); pProps.onActionReward(45, 20, 'Colheita em Estufa'); } },
+              { x: 35, y: 29, label: 'Neo-Metro Rapid Transit (+30⚡, +Exp)', action: () => { sound.playNewsBroadcast(); addFloatingText('TRANSIT PASS // +30 ENERGIA', '#00f0ff'); pProps.onActionReward(30, 25, 'Rode Neo-Metro'); } },
+              { x: 33, y: 38, label: 'Meditar na Fonte Quântica (+25⚡)', action: () => { sound.playRest(); addFloatingText('+25 Energia', '#c084fc'); pProps.onActionReward(25, 20, 'Refletiu na Fonte Cívica'); } },
+            ];
+            for (const store of storefronts) {
+              if (Math.hypot(px - store.x, py - store.y) < 2.2) {
+                const s = isoToScreen(store.x, store.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = { text: `[E] ${store.label}`, action: store.action, x: s.x, y: s.y - 45 };
+                break;
+              }
+            }
+          }
+
+          if (!foundPrompt) {
+            for (const cit of citizensRef.current) {
+              if (Math.hypot(px - cit.x, py - cit.y) < 1.8) {
+                const s = isoToScreen(cit.x, cit.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = { text: `[E] Greet ${cit.name}`, action: () => { sound.playChirp(1.2); addFloatingText(cit.greeting, '#38bdf8'); pProps.onActionReward(10, 5, `Greeted ${cit.name}`); }, x: s.x, y: s.y - 45 };
+                break;
+              }
+            }
+          }
+
+          if (!foundPrompt) {
+            [{ x: 28, y: 7, label: 'Workstation Alpha' }, { x: 28, y: 14, label: 'Workstation Beta' }].forEach(k => {
+              if (Math.hypot(px - k.x, py - k.y) < 1.8) {
+                const s = isoToScreen(k.x, k.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = { text: `[E] Hack ${k.label} (+Credits)`, action: pProps.onInteractTerminal, x: s.x, y: s.y - 40 };
+              }
+            });
+          }
+
+          if (!foundPrompt && currentHouse && Math.hypot(px - 38, py - 7) < 2.5) {
+            const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height);
+            foundPrompt = { text: `[E] Enter Academy Residence (${currentHouse.name})`, action: () => pProps.onEnterHouse(currentHouse.id), x: s.x, y: s.y - 50 };
+          }
+
+          if (!foundPrompt && Math.hypot(px - 33, py - 13) < 2.2) {
+            const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height);
+            foundPrompt = { text: '[E] Attend AI Holo-Lecture (+50 CR, +25 Cyber-EXP)', action: () => { sound.playLevelUp(); addFloatingText('+50 CR', '#00f0ff'); pProps.onActionReward(50, 25, 'Attended AI Holo-Lecture'); }, x: s.x, y: s.y - 45 };
+          }
+
+          if (!foundPrompt) {
+            [{ x: 8, y: 11, n: 'Synth-Drink Dispenser', c: 'drink' }, { x: 10, y: 41, n: 'Cyber-Snack Dispenser', c: 'snack' }, { x: 42, y: 39, n: 'Plaza Vending Station', c: 'all' }].forEach(v => {
+              if (Math.hypot(px - v.x, py - v.y) < 2.0) {
+                const s = isoToScreen(v.x, v.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = { text: `[E] Open ${v.n}`, action: () => pProps.onInteractVendingMachine(v.c as any), x: s.x, y: s.y - 35 };
+              }
+            });
+          }
+
+          if (!foundPrompt) {
+            [{ x: 10, y: 10 }, { x: 14, y: 9 }, { x: 28, y: 36 }, { x: 38, y: 40 }].forEach(b => {
+              if (Math.hypot(px - b.x, py - b.y) < 1.8) {
+                const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = { text: '[E] Rest on Cyber-Bench (+25 Energy)', action: () => { sound.playRest(); addFloatingText('+25 Energy', '#38bdf8'); pProps.onActionReward(0, 10, 'Rested on Bench'); }, x: s.x, y: s.y - 35 };
+              }
+            });
+          }
+
+          if (!foundPrompt && Math.hypot(px - 40, py - 14) < 1.9) {
+            const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height);
+            foundPrompt = { text: '[E] Reparar Drone (-15⚡, +60 CR, +30 Eng)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(15, 'Reparo de Drone')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); return; } pProps.onInteractRepairBot(); }, x: s.x, y: s.y - 35 };
+          }
+        } else if (gameState.currentScene === 'interior') {
+          const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
+          if (est) {
+            const npc = gameState.npcs?.[est.npcId];
+            if (Math.hypot(px - 3, py - 2) < 2.2 && npc && !foundPrompt) {
+              const s = isoToScreen(3, 2, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = { text: `[E] Falar com ${npc.name}`, action: () => { sound.playChirp(1.0); pProps.onInteractNPC(npc); }, x: s.x, y: s.y - 50 };
+            }
+            if (Math.hypot(px - (est.interiorSize.width - 1), py - (est.interiorSize.height - 1)) < 1.8 && !foundPrompt) {
+              const s = isoToScreen(est.interiorSize.width - 1, est.interiorSize.height - 1, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = { text: '[E] Sair para Metropolis', action: () => { sound.playChirp(0.9); pProps.onExitInterior ? pProps.onExitInterior() : pProps.onExitHouse(); }, x: s.x, y: s.y - 35 };
+            }
+          }
+        } else if (currentHouse) {
+          if (Math.hypot(px - (currentHouse.gridWidth - 1), py - (currentHouse.gridHeight - 1)) < 1.8) {
+            const s = isoToScreen(currentHouse.gridWidth - 1, currentHouse.gridHeight - 1, cameraRef.current, canvas.width, canvas.height);
+            foundPrompt = { text: '[E] Sair para Metropolis', action: pProps.onExitHouse, x: s.x, y: s.y - 35 };
+          }
+          currentHouse.placedFurniture?.forEach(item => {
+            const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
+            if (furnDef && Math.hypot(px - (item.x + furnDef.width / 2), py - (item.y + furnDef.height / 2)) < 1.8) {
+              const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height);
+              if (furnDef.interactiveType === 'bed') foundPrompt = { text: '[E] Dormir & Descansar', action: pProps.onInteractBed, x: s.x, y: s.y - 30 };
+              else if (furnDef.interactiveType === 'arcade') foundPrompt = { text: '[E] Jogar Neon Drift', action: pProps.onInteractArcade, x: s.x, y: s.y - 45 };
+              else if (furnDef.interactiveType === 'terminal') foundPrompt = { text: '[E] Terminal Bypass', action: pProps.onInteractTerminal, x: s.x, y: s.y - 35 };
+              else if (furnDef.interactiveType === 'plant') foundPrompt = { text: '[E] Cuidar das Plantas', action: pProps.onInteractPlant, x: s.x, y: s.y - 30 };
+            }
+          });
+        }
+
+        if (foundPrompt?.text !== currentPromptRef.current?.text) {
+          currentPromptRef.current = foundPrompt;
+          setNearbyPrompt(foundPrompt);
+        } else if (!foundPrompt && currentPromptRef.current) {
+          currentPromptRef.current = null;
+          setNearbyPrompt(null);
+        }
+
+        const currentFloorX = Math.floor(px);
+        const currentFloorY = Math.floor(py);
+        if (currentFloorX !== lastFloorCoordsRef.current.x || currentFloorY !== lastFloorCoordsRef.current.y) {
+          lastFloorCoordsRef.current = { x: currentFloorX, y: currentFloorY };
+          setUiCoords({ x: currentFloorX, y: currentFloorY });
+        }
+      } catch (error) {
+        console.error("⛔ CRASH FATAL EVITADO NO GAME LOOP:", error);
+      } finally {
+        animId = requestAnimationFrame(gameLoop);
       }
-    }
-  }
+    };
 
-  // Keypad & Credit Card Terminal (pulsing LED)
-  const pulse = Math.sin(time * 6) > 0;
-  ctx.fillStyle = pulse ? '#22c55e' : '#15803d';
-  ctx.fillRect(screenX + 6 * z, screenY - 8 * z, 2 * z, 2 * z);
+    animId = requestAnimationFrame(gameLoop);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
-  // Dispenser Port / Drop Tray
-  ctx.fillStyle = '#0a0f1d';
-  ctx.fillRect(screenX - 8 * z, screenY - 7 * z, 16 * z, 5 * z);
-  ctx.strokeStyle = primaryNeon;
-  ctx.lineWidth = 1 * z;
-  ctx.strokeRect(screenX - 8 * z, screenY - 7 * z, 16 * z, 5 * z);
+  useEffect(() => {
+    const handleResize = () => {
+      const canvas = canvasRef.current;
+      if (canvas && canvas.parentElement) {
+        canvas.width = canvas.parentElement.clientWidth || 800;
+        canvas.height = canvas.parentElement.clientHeight || 600;
+      }
+    };
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
-  ctx.restore();
-}
+  const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const iso = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
 
-// 11. Holographic Campus Wayfinding Signpost
-export function drawCampusSignpost(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Post
-  ctx.fillStyle = '#334155';
-  ctx.fillRect(screenX - 1.5 * z, screenY - 32 * z, 3 * z, 32 * z);
-
-  // Floating Holographic Sign Arrows
-  const bob = Math.sin(time * 2) * 1.5 * z;
-
-  // Sign 1: ACADEMY (Points Right towards complex)
-  ctx.fillStyle = 'rgba(0, 240, 255, 0.25)';
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(screenX - 4 * z, screenY - 30 * z + bob, 26 * z, 8 * z);
-  ctx.fillRect(screenX - 4 * z, screenY - 30 * z + bob, 26 * z, 8 * z);
-  ctx.fillStyle = '#00f0ff';
-  ctx.font = `bold ${Math.round(5.5 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('ACADEMY ->', screenX + 9 * z, screenY - 24 * z + bob);
-
-  // Sign 2: HACK LABS (Points Left)
-  ctx.fillStyle = 'rgba(255, 42, 133, 0.25)';
-  ctx.strokeStyle = '#ff2a85';
-  ctx.strokeRect(screenX - 22 * z, screenY - 20 * z + bob, 24 * z, 8 * z);
-  ctx.fillRect(screenX - 22 * z, screenY - 20 * z + bob, 24 * z, 8 * z);
-  ctx.fillStyle = '#ff2a85';
-  ctx.fillText('<- LABS', screenX - 10 * z, screenY - 14 * z + bob);
-
-  ctx.restore();
-}
-
-// ---------------------------------------------------------------------------
-// METROPOLIS EXPANSION: TRAFFIC, HIGHWAYS, SKYSCRAPERS & STREET PROPS
-// ---------------------------------------------------------------------------
-
-export type TrafficVehicleType = 'taxi' | 'speeder' | 'patrol' | 'cargo';
-export type TrafficDirection = 'SE' | 'NW' | 'SW' | 'NE';
-
-// Dynamic Moving Hover Traffic Vehicle
-export function drawMovingTrafficVehicle(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  type: TrafficVehicleType,
-  dir: TrafficDirection,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Subtle hover float bob
-  const hoverOffset = Math.sin(time * 5 + screenX * 0.05) * 2.5 * z;
-  const sy = screenY + hoverOffset;
-
-  // Ground Shadow (soft oval below vehicle)
-  ctx.fillStyle = 'rgba(2, 6, 23, 0.65)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 10 * z, 26 * z, 11 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Color schemes based on vehicle type
-  let bodyColor = '#f59e0b'; // Default Taxi
-  let trimColor = '#00f0ff';
-  let underglowColor = 'rgba(0, 240, 255, 0.4)';
-
-  if (type === 'patrol') {
-    bodyColor = '#0f172a';
-    trimColor = '#38bdf8';
-    underglowColor = 'rgba(56, 189, 248, 0.45)';
-  } else if (type === 'speeder') {
-    bodyColor = '#ec4899';
-    trimColor = '#a855f7';
-    underglowColor = 'rgba(236, 72, 153, 0.5)';
-  } else if (type === 'cargo') {
-    bodyColor = '#0284c7';
-    trimColor = '#38bdf8';
-    underglowColor = 'rgba(14, 165, 233, 0.35)';
-  }
-
-  // Draw Underglow Radial Gradient
-  const underglowGrad = ctx.createRadialGradient(screenX, sy + 4 * z, 2 * z, screenX, sy + 6 * z, 24 * z);
-  underglowGrad.addColorStop(0, underglowColor);
-  underglowGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-  ctx.fillStyle = underglowGrad;
-  ctx.beginPath();
-  ctx.ellipse(screenX, sy + 6 * z, 26 * z, 12 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // 1. Vehicle Main Chassis
-  ctx.fillStyle = bodyColor;
-  ctx.fillRect(screenX - 22 * z, sy - 8 * z, 44 * z, 15 * z);
-
-  // Aerodynamic Slope
-  ctx.fillStyle = type === 'patrol' ? '#1e293b' : '#1e1b4b';
-  ctx.beginPath();
-  ctx.moveTo(screenX - 18 * z, sy - 8 * z);
-  ctx.lineTo(screenX - 8 * z, sy - 17 * z);
-  ctx.lineTo(screenX + 12 * z, sy - 17 * z);
-  ctx.lineTo(screenX + 20 * z, sy - 8 * z);
-  ctx.closePath();
-  ctx.fill();
-
-  // Tinted Canopy Windshield
-  ctx.fillStyle = '#06b6d4';
-  ctx.fillRect(screenX - 6 * z, sy - 15 * z, 16 * z, 6 * z);
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(screenX - 4 * z, sy - 14 * z, 6 * z, 1.5 * z);
-
-  // Repulsor Hover Emitters (Cyan/Blue glowing thrusters)
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 18 * z, sy + 4 * z, 8 * z, 3 * z);
-  ctx.fillRect(screenX + 10 * z, sy + 4 * z, 8 * z, 3 * z);
-
-  // 2. Specific Vehicle Decals & Props
-  if (type === 'taxi') {
-    // Checkerboard yellow/black side strip
-    ctx.fillStyle = '#0f172a';
-    for (let c = 0; c < 5; c++) {
-      ctx.fillRect(screenX - 16 * z + c * 7 * z, sy - 3 * z, 3.5 * z, 3 * z);
-    }
-    // Illuminated "TAXI" Roof Pod
-    ctx.fillStyle = '#000000';
-    ctx.fillRect(screenX - 6 * z, sy - 21 * z, 12 * z, 4 * z);
-    ctx.fillStyle = '#00f0ff';
-    ctx.font = `bold ${Math.round(4 * z)}px monospace`;
-    ctx.textAlign = 'center';
-    ctx.fillText('TAXI', screenX, sy - 18 * z);
-  } else if (type === 'patrol') {
-    // Strobing Police Siren on Roof (Flashing Red & Blue)
-    const strobe = Math.sin(time * 18) > 0;
-    ctx.fillStyle = strobe ? '#ef4444' : '#00f0ff';
-    ctx.fillRect(screenX - 6 * z, sy - 21 * z, 5 * z, 4 * z);
-    ctx.fillStyle = strobe ? '#00f0ff' : '#ef4444';
-    ctx.fillRect(screenX + 1 * z, sy - 21 * z, 5 * z, 4 * z);
-
-    // Strobe flare light cone
-    ctx.fillStyle = strobe ? 'rgba(239, 68, 68, 0.25)' : 'rgba(0, 240, 255, 0.25)';
-    ctx.beginPath();
-    ctx.arc(screenX, sy - 19 * z, 16 * z, 0, Math.PI * 2);
-    ctx.fill();
-  } else if (type === 'cargo') {
-    // Heavy container box mounted on rear
-    ctx.fillStyle = '#334155';
-    ctx.fillRect(screenX - 20 * z, sy - 20 * z, 18 * z, 12 * z);
-    ctx.strokeStyle = '#38bdf8';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(screenX - 20 * z, sy - 20 * z, 18 * z, 12 * z);
-    // Warning hazard stripes
-    ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(screenX - 19 * z, sy - 10 * z, 16 * z, 2 * z);
-  }
-
-  // 3. Directional Headlights & Tail Light Beams
-  const isFacingForward = dir === 'SE' || dir === 'SW';
-
-  if (isFacingForward) {
-    // Twin Headlight Beams projecting forward onto the street
-    ctx.fillStyle = '#fef08a';
-    ctx.fillRect(screenX + 14 * z, sy - 3 * z, 4 * z, 4 * z);
-    ctx.fillRect(screenX + 18 * z, sy - 1 * z, 3 * z, 3 * z);
-
-    // Volumetric Headlight Cone onto the asphalt
-    const beamGrad = ctx.createRadialGradient(screenX + 20 * z, sy, 2 * z, screenX + 50 * z, sy + 18 * z, 36 * z);
-    beamGrad.addColorStop(0, 'rgba(254, 240, 138, 0.35)');
-    beamGrad.addColorStop(0.5, 'rgba(0, 240, 255, 0.15)');
-    beamGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = beamGrad;
-    ctx.beginPath();
-    ctx.ellipse(screenX + 38 * z, sy + 14 * z, 28 * z, 14 * z, 0.2, 0, Math.PI * 2);
-    ctx.fill();
-
-    // Red taillight at rear
-    ctx.fillStyle = '#ef4444';
-    ctx.fillRect(screenX - 22 * z, sy - 3 * z, 3 * z, 3 * z);
-  } else {
-    // Facing NW / NE (moving away or upward)
-    ctx.fillStyle = '#ef4444';
-    ctx.fillRect(screenX + 16 * z, sy - 3 * z, 4 * z, 4 * z);
-
-    // Front headlights beam away
-    const beamGrad = ctx.createRadialGradient(screenX - 20 * z, sy, 2 * z, screenX - 50 * z, sy - 18 * z, 36 * z);
-    beamGrad.addColorStop(0, 'rgba(254, 240, 138, 0.3)');
-    beamGrad.addColorStop(1, 'rgba(0, 0, 0, 0)');
-    ctx.fillStyle = beamGrad;
-    ctx.beginPath();
-    ctx.ellipse(screenX - 38 * z, sy - 14 * z, 28 * z, 14 * z, -0.2, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  ctx.restore();
-}
-
-// 12. Mega Skyscraper Tower Structure
-export function drawSkyscraperTower(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  name: string,
-  floors = 5,
-  time = 0,
-  zoom = 1,
-  accentColor = '#00f0ff'
-) {
-  const z = zoom;
-  ctx.save();
-
-  const towerW = 70 * z;
-  const towerH = (80 + floors * 18) * z;
-  const baseTop = screenY - towerH;
-
-  // Tower shadow
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.beginPath();
-  ctx.ellipse(screenX + 10 * z, screenY + 15 * z, 55 * z, 25 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Main concrete & dark glass column
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX - towerW / 2, baseTop, towerW, towerH);
-  ctx.strokeStyle = '#1e293b';
-  ctx.lineWidth = 2 * z;
-  ctx.strokeRect(screenX - towerW / 2, baseTop, towerW, towerH);
-
-  // Side accent vertical glow strips
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(screenX - towerW / 2 + 2 * z, baseTop + 10 * z, 2.5 * z, towerH - 20 * z);
-  ctx.fillRect(screenX + towerW / 2 - 4.5 * z, baseTop + 10 * z, 2.5 * z, towerH - 20 * z);
-
-  // Cyber Windows Grid
-  const cols = 5;
-  const winRows = Math.floor(floors * 2.5);
-  for (let r = 0; r < winRows; r++) {
-    for (let c = 0; c < cols; c++) {
-      const wx = screenX - towerW / 2 + 10 * z + c * 11 * z;
-      const wy = baseTop + 24 * z + r * 14 * z;
-      const seed = Math.sin(r * 13 + c * 7 + screenX);
-      const isLit = seed > -0.2;
-      const pulseLit = seed > 0.6 ? 0.6 + Math.sin(time * 2 + r + c) * 0.4 : 1.0;
-
-      if (isLit) {
-        ctx.fillStyle = (c + r) % 3 === 0
-          ? `rgba(0, 240, 255, ${0.4 * pulseLit})`
-          : (c + r) % 3 === 1
-          ? `rgba(251, 191, 36, ${0.45 * pulseLit})`
-          : `rgba(244, 63, 94, ${0.35 * pulseLit})`;
+    if (props.isDecorateMode) {
+      const tileX = Math.floor(iso.x);
+      const tileY = Math.floor(iso.y);
+      if (props.selectedCatalogItem) {
+        props.onPlaceFurnitureAt(tileX, tileY);
       } else {
-        ctx.fillStyle = '#080d1a';
+        const currentHouse = props.gameState.houses?.find(h => h.id === props.gameState.currentHouseId) || props.gameState.houses?.[0];
+        const clickedItem = currentHouse?.placedFurniture?.find(item => tileX >= item.x && tileX < item.x + 2 && tileY >= item.y && tileY < item.y + 2);
+        props.onSelectPlaced(clickedItem ? clickedItem.instanceId : null);
       }
-      ctx.fillRect(wx, wy, 7 * z, 6 * z);
+    } else {
+      sound.playStep();
+      playerRef.current.x = Math.max(1, Math.min(TOWN_SIZE - 2, iso.x));
+      playerRef.current.y = Math.max(1, Math.min(TOWN_SIZE - 2, iso.y));
     }
-  }
+  };
 
-  // Rooftop Crown & Antenna Spire
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(screenX - towerW / 2 - 4 * z, baseTop - 8 * z, towerW + 8 * z, 10 * z);
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(screenX - 2 * z, baseTop - 36 * z, 4 * z, 28 * z);
+  const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    mouseIsoRef.current = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
+  };
 
-  // Blinking Red Aviation Warning Light
-  const beaconPulse = Math.sin(time * 6) > 0;
-  ctx.fillStyle = beaconPulse ? '#ef4444' : '#7f1d1d';
-  ctx.beginPath();
-  ctx.arc(screenX, baseTop - 38 * z, 3.5 * z, 0, Math.PI * 2);
-  ctx.fill();
-
-  if (beaconPulse) {
-    ctx.fillStyle = 'rgba(239, 68, 68, 0.4)';
-    ctx.beginPath();
-    ctx.arc(screenX, baseTop - 38 * z, 10 * z, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // Holographic Corporate Logo Billboard Header
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
-  ctx.fillRect(screenX - 28 * z, baseTop + 6 * z, 56 * z, 14 * z);
-  ctx.strokeStyle = accentColor;
-  ctx.lineWidth = 1 * z;
-  ctx.strokeRect(screenX - 28 * z, baseTop + 6 * z, 56 * z, 14 * z);
-
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${Math.round(6.5 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText(name.toUpperCase(), screenX, baseTop + 16 * z);
-
-  ctx.restore();
-}
-
-// 13. Subsurface Metro Station Terminal Entrance
-export function drawMetroStation(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Ground footprint shadow
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY + 4 * z, 34 * z, 18 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Glass Canopy & Entrance Frame
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX - 26 * z, screenY - 26 * z, 52 * z, 28 * z);
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 2 * z;
-  ctx.strokeRect(screenX - 26 * z, screenY - 26 * z, 52 * z, 28 * z);
-
-  // Glowing "NEO-METRO" Header Bar
-  ctx.fillStyle = '#00f0ff';
-  ctx.fillRect(screenX - 24 * z, screenY - 34 * z, 48 * z, 10 * z);
-  ctx.fillStyle = '#0f172a';
-  ctx.font = `bold ${Math.round(6 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText('NEO-METRO LINE', screenX, screenY - 27 * z);
-
-  // Descending Subsurface Staircase (tiered steps going into glow)
-  const steps = 4;
-  for (let s = 0; s < steps; s++) {
-    ctx.fillStyle = s % 2 === 0 ? '#1e293b' : '#334155';
-    ctx.fillRect(screenX - 16 * z + s * 2 * z, screenY - 14 * z + s * 4.5 * z, 32 * z - s * 4 * z, 4 * z);
-  }
-
-  // Deep underground glowing aperture
-  const subwayGlow = 0.5 + Math.sin(time * 3) * 0.25;
-  ctx.fillStyle = `rgba(0, 240, 255, ${subwayGlow})`;
-  ctx.fillRect(screenX - 10 * z, screenY + 2 * z, 20 * z, 3 * z);
-
-  // Digital Arrival Hologram Ticker Board
-  const pulseTrain = Math.floor(time * 1.5) % 2 === 0 ? 'LINE 01: ARRIVING' : 'LINE 04: 2 MIN';
-  ctx.fillStyle = '#10b981';
-  ctx.font = `bold ${Math.round(4.8 * z)}px monospace`;
-  ctx.fillText(pulseTrain, screenX, screenY - 18 * z);
-
-  // Turnstile Gates
-  ctx.fillStyle = '#ef4444';
-  ctx.fillRect(screenX - 14 * z, screenY - 10 * z, 3 * z, 6 * z);
-  ctx.fillStyle = '#10b981';
-  ctx.fillRect(screenX + 11 * z, screenY - 10 * z, 3 * z, 6 * z);
-
-  ctx.restore();
-}
-
-// 14. Giant High-Tech Holographic Street Billboard
-export function drawHoloBillboard(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Heavy Metal Steel Support Pylons
-  ctx.fillStyle = '#334155';
-  ctx.fillRect(screenX - 18 * z, screenY - 45 * z, 4 * z, 45 * z);
-  ctx.fillRect(screenX + 14 * z, screenY - 45 * z, 4 * z, 45 * z);
-
-  // Billboard Screen Housing
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX - 32 * z, screenY - 78 * z, 64 * z, 34 * z);
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5 * z;
-  ctx.strokeRect(screenX - 32 * z, screenY - 78 * z, 64 * z, 34 * z);
-
-  // Animated Screen Ad Content (Cycles every 4 seconds)
-  const adIdx = Math.floor(time / 4) % 3;
-  let adTitle = 'ARASAKA NEURAL';
-  let adSub = 'UPGRADE TODAY';
-  let adBg = '#1e1b4b';
-  let adColor = '#00f0ff';
-
-  if (adIdx === 1) {
-    adTitle = 'SYNTH-RAMEN';
-    adSub = 'HOT IN 3 SECONDS';
-    adBg = '#450a0a';
-    adColor = '#f87171';
-  } else if (adIdx === 2) {
-    adTitle = 'NIGHT CITY WIRE';
-    adSub = 'STAY INFORMED';
-    adBg = '#14532d';
-    adColor = '#34d399';
-  }
-
-  ctx.fillStyle = adBg;
-  ctx.fillRect(screenX - 30 * z, screenY - 76 * z, 60 * z, 30 * z);
-
-  // Scanline Effect
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.25)';
-  for (let y = screenY - 76 * z; y < screenY - 46 * z; y += 3 * z) {
-    ctx.fillRect(screenX - 30 * z, y, 60 * z, 1.2 * z);
-  }
-
-  // Neon Ad Typography
-  ctx.fillStyle = '#ffffff';
-  ctx.font = `bold ${Math.round(5.5 * z)}px "Chakra Petch", sans-serif`;
-  ctx.textAlign = 'center';
-  ctx.fillText(adTitle, screenX, screenY - 64 * z);
-
-  ctx.fillStyle = adColor;
-  ctx.font = `bold ${Math.round(4.8 * z)}px "Press Start 2P", monospace`;
-  ctx.fillText(adSub, screenX, screenY - 54 * z);
-
-  ctx.restore();
-}
-
-// 15. Overhead Traffic Gantry & Crosswalk Signals
-export function drawTrafficLightSignal(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  state: 'red' | 'yellow' | 'green' = 'green',
-  pedestrianWalk: boolean = false,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Support Post
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(screenX - 2 * z, screenY - 44 * z, 4 * z, 44 * z);
-
-  // Cantilever Arm
-  ctx.fillStyle = '#334155';
-  ctx.fillRect(screenX - 2 * z, screenY - 44 * z, 34 * z, 4 * z);
-
-  // Traffic Signal Box
-  ctx.fillStyle = '#0f172a';
-  ctx.fillRect(screenX + 18 * z, screenY - 46 * z, 14 * z, 18 * z);
-  ctx.strokeStyle = '#64748b';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(screenX + 18 * z, screenY - 46 * z, 14 * z, 18 * z);
-
-  // Red Light (top)
-  const isRed = state === 'red';
-  ctx.fillStyle = isRed ? '#ef4444' : '#450a0a';
-  ctx.beginPath();
-  ctx.arc(screenX + 25 * z, screenY - 41 * z, 3 * z, 0, Math.PI * 2);
-  ctx.fill();
-  if (isRed) {
-    ctx.shadowColor = '#ef4444';
-    ctx.shadowBlur = 8 * z;
-  }
-
-  // Yellow Light (middle)
-  const isYellow = state === 'yellow';
-  ctx.fillStyle = isYellow ? '#f59e0b' : '#451a03';
-  ctx.beginPath();
-  ctx.arc(screenX + 25 * z, screenY - 35 * z, 3 * z, 0, Math.PI * 2);
-  ctx.fill();
-  if (isYellow) {
-    ctx.shadowColor = '#f59e0b';
-    ctx.shadowBlur = 8 * z;
-  }
-
-  // Green Light (bottom)
-  const isGreen = state === 'green';
-  ctx.fillStyle = isGreen ? '#10b981' : '#064e3b';
-  ctx.beginPath();
-  ctx.arc(screenX + 25 * z, screenY - 29 * z, 3 * z, 0, Math.PI * 2);
-  ctx.fill();
-  if (isGreen) {
-    ctx.shadowColor = '#10b981';
-    ctx.shadowBlur = 8 * z;
-  }
-  ctx.shadowBlur = 0;
-
-  // Pedestrian Walk Indicator Display below arm
-  ctx.fillStyle = '#090d16';
-  ctx.fillRect(screenX + 3 * z, screenY - 33 * z, 16 * z, 10 * z);
-  ctx.strokeStyle = pedestrianWalk ? '#10b981' : '#ef4444';
-  ctx.lineWidth = 1;
-  ctx.strokeRect(screenX + 3 * z, screenY - 33 * z, 16 * z, 10 * z);
-
-  ctx.fillStyle = pedestrianWalk ? '#10b981' : '#ef4444';
-  ctx.font = `bold ${Math.round(4.5 * z)}px monospace`;
-  ctx.textAlign = 'center';
-  ctx.fillText(pedestrianWalk ? 'WALK' : 'WAIT', screenX + 11 * z, screenY - 26 * z);
-
-  ctx.restore();
-}
-
-
-// 16. Elevated Pedestrian Skybridge
-export function drawPedestrianSkybridge(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // High bridge span across road
-  const spanW = 90 * z;
-  const spanH = 22 * z;
-  const bridgeY = screenY - 70 * z;
-
-  // Shadow on road below
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-  ctx.fillRect(screenX - spanW / 2, screenY - 6 * z, spanW, 14 * z);
-
-  // Enclosed glass corridor
-  ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-  ctx.fillRect(screenX - spanW / 2, bridgeY, spanW, spanH);
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5 * z;
-  ctx.strokeRect(screenX - spanW / 2, bridgeY, spanW, spanH);
-
-  // Transparent glass panels with interior lighting
-  ctx.fillStyle = 'rgba(6, 182, 212, 0.2)';
-  ctx.fillRect(screenX - spanW / 2 + 4 * z, bridgeY + 4 * z, spanW - 8 * z, spanH - 8 * z);
-
-  // Pedestrian silhouettes inside
-  const silX = screenX + Math.sin(time * 0.8) * 20 * z;
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(silX - 2 * z, bridgeY + 8 * z, 4 * z, 8 * z);
-  ctx.beginPath();
-  ctx.arc(silX, bridgeY + 6 * z, 2 * z, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Neon underglow strip
-  ctx.fillStyle = '#ff2a85';
-  ctx.fillRect(screenX - spanW / 2, bridgeY + spanH, spanW, 2 * z);
-
-  ctx.restore();
-}
-
-// 17. Civic Holographic Light Fountain
-export function drawCyberFountain(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  time: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Basalt fountain basin
-  ctx.fillStyle = '#1e293b';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY, 26 * z, 13 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#00f0ff';
-  ctx.lineWidth = 1.5 * z;
-  ctx.stroke();
-
-  // Pool water with cyan ripples
-  ctx.fillStyle = '#06b6d4';
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY, 22 * z, 11 * z, 0, 0, Math.PI * 2);
-  ctx.fill();
-
-  // Holographic water column / light jet
-  const fountainH = 28 * z + Math.sin(time * 4) * 4 * z;
-  const colGrad = ctx.createLinearGradient(screenX, screenY, screenX, screenY - fountainH);
-  colGrad.addColorStop(0, 'rgba(0, 240, 255, 0.8)');
-  colGrad.addColorStop(1, 'rgba(255, 42, 133, 0.1)');
-  ctx.fillStyle = colGrad;
-  ctx.fillRect(screenX - 3 * z, screenY - fountainH, 6 * z, fountainH);
-
-  // Expanding holographic energy rings
-  const ring1 = (time * 1.5) % 1.0;
-  ctx.strokeStyle = `rgba(0, 240, 255, ${1 - ring1})`;
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  ctx.ellipse(screenX, screenY - fountainH * ring1, 16 * z * ring1, 8 * z * ring1, 0, 0, Math.PI * 2);
-  ctx.stroke();
-
-  ctx.restore();
-}
-
-// 18. Street Detail: Cyber Recycle Bin & Coolant Fire Hydrant
-export function drawTrashBinAndHydrant(
-  ctx: CanvasRenderingContext2D,
-  screenX: number,
-  screenY: number,
-  zoom = 1
-) {
-  const z = zoom;
-  ctx.save();
-
-  // Cyber Trash Receptacle (Left)
-  ctx.fillStyle = '#1e293b';
-  ctx.fillRect(screenX - 10 * z, screenY - 12 * z, 8 * z, 12 * z);
-  ctx.fillStyle = '#10b981';
-  ctx.fillRect(screenX - 9 * z, screenY - 10 * z, 6 * z, 2 * z);
-
-  // Coolant Fire Hydrant (Right)
-  ctx.fillStyle = '#e11d48';
-  ctx.fillRect(screenX + 4 * z, screenY - 10 * z, 6 * z, 10 * z);
-  ctx.fillStyle = '#00f0ff';
-  ctx.beginPath();
-  ctx.arc(screenX + 7 * z, screenY - 10 * z, 3 * z, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.restore();
-}
-// =========================================================================
-// POST-PROCESSING PIPELINE: CRT & RGB ABERRATION SHADERS
-// =========================================================================
-
-/**
- * Aplica um efeito de aberração cromática (RGB Split) aos píxeis do ecrã.
- * Este efeito imita uma lente danificada ou um sinal de vídeo corrompido,
- * puxando o canal vermelho para a esquerda e o canal azul para a direita.
- */
-export function applyChromaticAberration(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  intensity: number = 3 // Distância em píxeis do desvio
-) {
-  // Extrair o buffer de píxeis bruto
-  const imageData = ctx.getImageData(0, 0, width, height);
-  const data = imageData.data;
-  
-  // Criamos uma cópia para ler os píxeis originais enquanto mutamos o ecrã
-  const copyData = new Uint8ClampedArray(data);
-
-  // Percorrer cada píxel (cada píxel tem 4 bytes: R, G, B, Alpha)
-  for (let i = 0; i < data.length; i += 4) {
-    const isRed = i % 4 === 0;
-    const isBlue = (i - 2) % 4 === 0;
-
-    if (isRed) {
-      // Puxar o Vermelho (Red) píxeis para a esquerda
-      const offset = i + (intensity * 4);
-      if (offset < data.length) {
-        data[i] = copyData[offset];
-      }
-    } else if (isBlue) {
-      // Puxar o Azul (Blue) píxeis para a direita
-      const offset = i - (intensity * 4);
-      if (offset >= 0) {
-        data[i] = copyData[offset];
-      }
+  const getCurrentDistrictBadge = () => {
+    if (props.gameState?.currentScene === 'interior') {
+      const est = NPC_ESTABLISHMENTS[props.gameState.currentInteriorId || 'ramen_bistro'];
+      return { badge: 'ESTABELECIMENTO', name: (est?.name || 'INTERIOR').toUpperCase(), color: 'text-pink-400 border-pink-500/40' };
     }
-  }
+    if (props.gameState?.currentScene !== 'town') {
+      const currentHouse = props.gameState?.houses?.find(h => h.id === props.gameState.currentHouseId) || props.gameState?.houses?.[0];
+      return { badge: 'RESIDENCE', name: (currentHouse?.name || 'CASA').toUpperCase(), color: 'text-cyan-400 border-cyan-500/40' };
+    }
 
-  // Devolver os píxeis mutados ao Canvas
-  ctx.putImageData(imageData, 0, 0);
-}
+    const { x, y } = uiCoords;
+    const isHighway = (x >= 21 && x <= 24) || (y >= 21 && y <= 24);
 
-/**
- * Desenha linhas de varrimento (Scanlines) horizontais e uma vinheta escura
- * nas bordas do ecrã para imitar um monitor CRT de arcada.
- */
-export function drawCRTOverlay(
-  ctx: CanvasRenderingContext2D,
-  width: number,
-  height: number,
-  time: number
-) {
-  ctx.save();
+    if (isHighway) return { badge: 'CENTRAL AXIS', name: 'NEO-HIGHWAY & TRANSIT CORRIDOR', color: 'text-amber-400 border-amber-500/40' };
+    if (x < 21 && y < 21) return { badge: 'DISTRICT 01', name: 'NEON COMMERCIAL BOULEVARD', color: 'text-cyan-400 border-cyan-500/40' };
+    if (x > 24 && y < 21) return { badge: 'DISTRICT 02', name: 'NEO-AKADEMIA CAMPUS & LABS', color: 'text-pink-400 border-pink-500/40' };
+    if (x < 21 && y > 24) return { badge: 'DISTRICT 03', name: 'CAPSULE RESIDENTIAL SECTOR', color: 'text-blue-400 border-blue-500/40' };
+    return { badge: 'DISTRICT 04', name: 'CIVIC METRO & TRANSIT PLAZA', color: 'text-purple-400 border-purple-500/40' };
+  };
 
-  // 1. CRT Scanlines (Linhas pretas semi-transparentes a cada 3 píxeis)
-  ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
-  for (let y = 0; y < height; y += 3) {
-    ctx.fillRect(0, y, width, 1);
-  }
+  const currentDistrict = getCurrentDistrictBadge();
 
-  // Efeito de Scanline grossa a rolar pelo ecrã (como TVs antigas a perder sincronização)
-  const rollY = (time * 120) % height;
-  ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
-  ctx.fillRect(0, rollY, width, 40);
+  return (
+    <div className="relative w-full h-full overflow-hidden select-none bg-slate-950">
+      <canvas ref={canvasRef} onClick={handleCanvasClick} onMouseMove={handleMouseMove} className="w-full h-full block pixelated cursor-crosshair" />
 
-  // 2. Vinheta Radial (Escurecer os cantos para focar o centro)
-  const cx = width / 2;
-  const cy = height / 2;
-  const maxRadius = Math.sqrt(cx * cx + cy * cy);
-  
-  const vignette = ctx.createRadialGradient(cx, cy, maxRadius * 0.4, cx, cy, maxRadius);
-  vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
-  vignette.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
+      {nearbyPrompt && !props.isDecorateMode && (
+        <div style={{ left: `${nearbyPrompt.x}px`, top: `${nearbyPrompt.y}px` }} className="absolute -translate-x-1/2 -translate-y-full z-30 pointer-events-auto">
+          <button onClick={nearbyPrompt.action} className="px-3.5 py-1.5 bg-slate-950/95 border-2 border-cyan-400 rounded-xl text-cyan-200 text-xs font-bold font-pixel shadow-2xl shadow-cyan-500/40 hover:bg-cyan-950 hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer animate-bounce">
+            <span>{nearbyPrompt.text}</span>
+          </button>
+        </div>
+      )}
 
-  ctx.fillStyle = vignette;
-  ctx.fillRect(0, 0, width, height);
+      <div className="absolute bottom-4 left-4 z-20 pointer-events-none hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-950/85 backdrop-blur-md rounded-xl border border-slate-800 shadow-xl">
+        <span className={`text-[9px] font-pixel px-1.5 py-0.5 rounded border ${currentDistrict.color} font-bold`}>{currentDistrict.badge}</span>
+        <span className="text-xs font-bold font-cyber text-slate-200 tracking-wider">{currentDistrict.name}</span>
+        <span className="text-[10px] font-mono text-slate-500 ml-1">[{uiCoords.x}, {uiCoords.y}]</span>
+      </div>
 
-  ctx.restore();
-}
+      <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1 sm:hidden pointer-events-auto">
+        <div className="flex justify-center">
+          <button onPointerDown={() => keysPressed.current.add('w')} onPointerUp={() => keysPressed.current.delete('w')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▲</button>
+        </div>
+        <div className="flex gap-2">
+          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keysPressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
+          <button onPointerDown={() => keysPressed.current.add('s')} onPointerUp={() => keysPressed.current.delete('s')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▼</button>
+          <button onPointerDown={() => keysPressed.current.add('d')} onPointerUp={() => keysPressed.current.delete('d')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">►</button>
+        </div>
+      </div>
+    </div>
+  );
+};
