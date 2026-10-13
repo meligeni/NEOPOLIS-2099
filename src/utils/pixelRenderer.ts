@@ -2240,3 +2240,86 @@ export function drawTrashBinAndHydrant(
 
   ctx.restore();
 }
+// =========================================================================
+// POST-PROCESSING PIPELINE: CRT & RGB ABERRATION SHADERS
+// =========================================================================
+
+/**
+ * Aplica um efeito de aberração cromática (RGB Split) aos píxeis do ecrã.
+ * Este efeito imita uma lente danificada ou um sinal de vídeo corrompido,
+ * puxando o canal vermelho para a esquerda e o canal azul para a direita.
+ */
+export function applyChromaticAberration(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  intensity: number = 3 // Distância em píxeis do desvio
+) {
+  // Extrair o buffer de píxeis bruto
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  
+  // Criamos uma cópia para ler os píxeis originais enquanto mutamos o ecrã
+  const copyData = new Uint8ClampedArray(data);
+
+  // Percorrer cada píxel (cada píxel tem 4 bytes: R, G, B, Alpha)
+  for (let i = 0; i < data.length; i += 4) {
+    const isRed = i % 4 === 0;
+    const isBlue = (i - 2) % 4 === 0;
+
+    if (isRed) {
+      // Puxar o Vermelho (Red) píxeis para a esquerda
+      const offset = i + (intensity * 4);
+      if (offset < data.length) {
+        data[i] = copyData[offset];
+      }
+    } else if (isBlue) {
+      // Puxar o Azul (Blue) píxeis para a direita
+      const offset = i - (intensity * 4);
+      if (offset >= 0) {
+        data[i] = copyData[offset];
+      }
+    }
+  }
+
+  // Devolver os píxeis mutados ao Canvas
+  ctx.putImageData(imageData, 0, 0);
+}
+
+/**
+ * Desenha linhas de varrimento (Scanlines) horizontais e uma vinheta escura
+ * nas bordas do ecrã para imitar um monitor CRT de arcada.
+ */
+export function drawCRTOverlay(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  time: number
+) {
+  ctx.save();
+
+  // 1. CRT Scanlines (Linhas pretas semi-transparentes a cada 3 píxeis)
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.15)';
+  for (let y = 0; y < height; y += 3) {
+    ctx.fillRect(0, y, width, 1);
+  }
+
+  // Efeito de Scanline grossa a rolar pelo ecrã (como TVs antigas a perder sincronização)
+  const rollY = (time * 120) % height;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.04)';
+  ctx.fillRect(0, rollY, width, 40);
+
+  // 2. Vinheta Radial (Escurecer os cantos para focar o centro)
+  const cx = width / 2;
+  const cy = height / 2;
+  const maxRadius = Math.sqrt(cx * cx + cy * cy);
+  
+  const vignette = ctx.createRadialGradient(cx, cy, maxRadius * 0.4, cx, cy, maxRadius);
+  vignette.addColorStop(0, 'rgba(0, 0, 0, 0)');
+  vignette.addColorStop(1, 'rgba(0, 0, 0, 0.6)');
+
+  ctx.fillStyle = vignette;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.restore();
+}
