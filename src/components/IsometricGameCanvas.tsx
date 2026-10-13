@@ -32,6 +32,8 @@ import {
   drawPedestrianSkybridge,
   drawCyberFountain,
   drawTrashBinAndHydrant,
+  applyChromaticAberration,
+  drawCRTOverlay,
   TrafficVehicleType,
   TrafficDirection,
 } from '../utils/pixelRenderer';
@@ -139,7 +141,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
   const mouseIsoRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const keysPressed = useRef<Set<string>>(new Set());
 
-  // Timing seguro - Inicializado a zero para evitar erros de Delta Time no primeiro frame
   const lastTimeRef = useRef<number>(0);
   const tickRef = useRef<number>(0);
   
@@ -209,17 +210,15 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
     };
   }, []);
 
-  // 3. MAIN ANIMATION LOOP (INDESTRUTÍVEL)
   useEffect(() => {
     let animId: number;
     const canvas = canvasRef.current;
     if (!canvas) return;
-    const ctx = canvas.getContext('2d');
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return;
 
     const gameLoop = (time: number) => {
       try {
-        // Correção de estabilidade Delta Time (evita frames negativos ou congelamentos enormes)
         if (lastTimeRef.current === 0) {
           lastTimeRef.current = time;
           return;
@@ -228,8 +227,8 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         let dt = (time - lastTimeRef.current) / 1000;
         lastTimeRef.current = time;
         
-        if (dt > 0.1) dt = 0.016; // Teto para evitar saltos quânticos se mudares de aba
-        if (dt <= 0) dt = 0.001;  // Evita timeScale negativo e matemática corrompida
+        if (dt > 0.1) dt = 0.016;
+        if (dt <= 0) dt = 0.001;
 
         const timeScale = dt * 60; 
         tickRef.current += 0.035 * timeScale;
@@ -239,15 +238,12 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         const pProps = propsRef.current;
         const { gameState } = pProps;
         
-        // Verifica se gameState é válido para evitar crashes
         if (!gameState) return;
 
         const currentHouse = gameState.houses?.find(h => h.id === gameState.currentHouseId) || gameState.houses?.[0];
 
-        // Cleanup floating texts
         floatingTextsRef.current = floatingTextsRef.current.filter(t => now - t.createdAt < 1800);
 
-        // Weather Particle & Physics Simulation
         if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
           if (Math.random() < (gameState.weather === 'glitch_storm' ? 0.35 : 0.2) * timeScale) {
             ripplesRef.current.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, progress: 0 });
@@ -269,7 +265,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           lightningFlashRef.current = 0;
         }
 
-        // 1. Process Player Movement
         let dx = 0;
         let dy = 0;
         const speed = 0.085 * timeScale;
@@ -314,7 +309,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           playerRef.current.y = nextY;
         }
 
-        // 2. Camera Tracking
         const playerScreen = {
           x: (playerRef.current.x - playerRef.current.y) * (TILE_WIDTH / 2),
           y: (playerRef.current.x + playerRef.current.y) * (TILE_HEIGHT / 2),
@@ -322,7 +316,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * (0.1 * timeScale);
         cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * (0.1 * timeScale);
 
-        // 3. Render Setup
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         const atmosphere = getWeatherAtmosphere(gameState.weather, gameState.timeHour);
         const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -430,7 +423,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           });
         }
 
-        // 5. Render Floor
         if (gameState.currentScene === 'town') {
           for (let x = 0; x < TOWN_SIZE; x++) {
             for (let y = 0; y < TOWN_SIZE; y++) {
@@ -493,7 +485,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           }
         }
 
-        // 6. Depth Sorted Render Queue
         interface DepthItem { depth: number; draw: () => void; }
         const renderQueue: DepthItem[] = [];
 
@@ -722,7 +713,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           });
         }
 
-        // 7. Player Character - BLINDADO CONTRA PROPRIEDADES NULAS NO ESTADO
         renderQueue.push({
           depth: playerRef.current.x + playerRef.current.y,
           draw: () => {
@@ -765,6 +755,14 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
         drawWeatherOverlay(ctx, canvas.width, canvas.height, tick, gameState.weather, lightningFlashRef.current, ripplesRef.current, gameState.timeHour);
 
+        // =========================================================================
+        // PIPELINE GRÁFICO (SHADERS DE POST-PROCESSING)
+        // =========================================================================
+        const glitchIntensity = (gameState.weather === 'glitch_storm') ? 6 : 2;
+        applyChromaticAberration(ctx, canvas.width, canvas.height, glitchIntensity);
+        drawCRTOverlay(ctx, canvas.width, canvas.height, tick);
+        // =========================================================================
+
         floatingTextsRef.current.forEach(ft => {
           const age = now - ft.createdAt;
           const ageRatio = age / 1800;
@@ -772,7 +770,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           const floatY = s.y - 35 - ageRatio * 45;
 
           ctx.save();
-          ctx.globalAlpha = 1 - ageRatio;
+          ctx.globalAlpha = Math.max(0, 1 - ageRatio);
           ctx.font = 'bold 12px "Press Start 2P", monospace';
           ctx.textAlign = 'center';
           ctx.fillStyle = ft.color;
@@ -782,7 +780,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           ctx.restore();
         });
 
-        // 11. CÁLCULO DE PROMPTS & SINCRONIZAÇÃO UI
         let foundPrompt = null;
         const px = playerRef.current.x;
         const py = playerRef.current.y;
@@ -924,7 +921,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
       } catch (error) {
         console.error("⛔ CRASH FATAL EVITADO NO GAME LOOP:", error);
       } finally {
-        // A garantia de vida. Mesmo que o loop estoure um erro, ele pede o frame seguinte.
         animId = requestAnimationFrame(gameLoop);
       }
     };
