@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState, useCallback } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import {
   Camera,
   TILE_WIDTH,
@@ -114,16 +114,181 @@ interface StoryNPCWalker {
   statusMessage: string;
 }
 
+// ============================================================================
+// PROCEDURAL GENERATION ENGINE (BSP Tree & PRNG)
+// ============================================================================
+
+// Semente de Geração (Pseudo-Random Number Generator) baseado no nome do Personagem
+const createPRNG = (seedStr: string) => {
+  let h = 0xdeadbeef;
+  for (let i = 0; i < seedStr.length; i++) h = Math.imul(h ^ seedStr.charCodeAt(i), 2654435761);
+  let state = h;
+  return () => {
+    state = (state * 1664525 + 1013904223) | 0;
+    return (state >>> 0) / 4294967296;
+  };
+};
+
+// Estruturas de Dados Procedurais
+interface CityLot { x: number; y: number; w: number; h: number; cx: number; cy: number; type: string; color?: string; }
+interface CityInteractable { x: number; y: number; id: string; type: string; label: string; actionData?: any; }
+interface CityMap {
+  tiles: number[][]; // 0=road, 1=crosswalk, 2=sidewalk, 3=alley, 10+=lots
+  buildings: CityLot[];
+  interactables: CityInteractable[];
+  props: { x: number; y: number; type: string; color?: string }[];
+  validWalkTiles: { x: number; y: number }[];
+}
+
+const TOWN_SIZE = 46;
+
+function generateProceduralCity(seed: string): CityMap {
+  const rng = createPRNG(seed);
+  const tiles: number[][] = Array(TOWN_SIZE).fill(0).map(() => Array(TOWN_SIZE).fill(2)); // Default: Sidewalk(2)
+  const validWalkTiles: { x: number; y: number }[] = [];
+  
+  // Ancorar a Autoestrada Central (Mantém o tráfego a funcionar)
+  for (let x = 0; x < TOWN_SIZE; x++) {
+    for (let y = 0; y < TOWN_SIZE; y++) {
+      const isAvenue = x >= 21 && x <= 24;
+      const isBoulevard = y >= 21 && y <= 24;
+      const isIntersection = isAvenue && isBoulevard;
+      const isCrosswalk = (isAvenue && ((y >= 19 && y <= 20) || (y >= 25 && y <= 26))) || 
+                          (isBoulevard && ((x >= 19 && x <= 20) || (x >= 25 && x <= 26)));
+      
+      if (isIntersection) tiles[x][y] = 0;
+      else if (isCrosswalk) tiles[x][y] = 1;
+      else if (isAvenue || isBoulevard) tiles[x][y] = 0;
+    }
+  }
+
+  // Divisão Espacial Binária (BSP) para os 4 Quadrantes
+  const getLots = (x: number, y: number, w: number, h: number): any[] => {
+    if (w < 13 && h < 13) return [{ x, y, w, h }];
+    let splitHoriz = rng() > 0.5;
+    if (w > h * 1.4) splitHoriz = false;
+    if (h > w * 1.4) splitHoriz = true;
+
+    if (splitHoriz) {
+      let splitY = Math.floor(rng() * (h - 10)) + 5;
+      let t = getLots(x, y, w, splitY);
+      let b = getLots(x, y + splitY + 2, w, h - splitY - 2); // +2 creates the alleyway
+      return [...t, ...b];
+    } else {
+      let splitX = Math.floor(rng() * (w - 10)) + 5;
+      let l = getLots(x, y, splitX, h);
+      let r = getLots(x + splitX + 2, y, w - splitX - 2, h);
+      return [...l, ...r];
+    }
+  };
+
+  const q1Lots = getLots(2, 2, 17, 17);
+  const q2Lots = getLots(27, 2, 17, 17);
+  const q3Lots = getLots(2, 27, 17, 17);
+  const q4Lots = getLots(27, 27, 17, 17);
+  const allLots = [...q1Lots, ...q2Lots, ...q3Lots, ...q4Lots];
+
+  // Distribuir os Edifícios Únicos
+  const uniqueFeatures = [
+    { type: 'ramen', id: 'ramen_bistro', label: "Entrar: Bistrô de Ramen do Chef Bao", color: '#ef4444' },
+    { type: 'clinic', id: 'ripperdoc_clinic', label: "Entrar: Clínica Ripperdoc do Dex", color: '#06b6d4' },
+    { type: 'robotics', id: 'robotics_garage', label: "Entrar: Oficina de Drones da Sparks", color: '#f59e0b' },
+    { type: 'netrunner', id: 'netrunner_den', label: "Entrar: Santuário Netrunner da Nyx", color: '#c084fc' },
+    { type: 'haute', id: 'haute_boutique', label: "Entrar: Boutique de Luxo do Vane", color: '#ec4899' },
+    { type: 'bazaar', id: 'furniture', label: "Glitch & Grind Bazaar (Móveis)", color: '#f59e0b' },
+    { type: 'blackice', id: 'arcade', label: "The Black Ice Arcade (-10⚡)", color: '#c084fc' },
+    { type: 'realty', id: 'realty', label: "Apex Real Estate (Imóveis)", color: '#eab308' },
+    { type: 'greenhouse', id: 'greenhouse', label: "Colheita Flora-Synth (-10⚡, +45 CR)", color: '#10b981' },
+    { type: 'metro', id: 'metro', label: "Neo-Metro Rapid Transit (+30⚡, +Exp)", color: '#00f0ff' },
+    { type: 'academy', id: 'academy', label: "Enter Academy Residence", color: '#38bdf8' },
+    { type: 'megapod', id: 'megapod', label: "Enter Capsule Residence", color: '#ef4444' },
+    { type: 'fountain', id: 'fountain', label: "Meditar na Fonte Quântica (+25⚡)", color: '#00f0ff' },
+    { type: 'kiosk', id: 'terminal', label: "Hack Workstation Alpha", color: '#ff2a85' },
+    { type: 'kiosk', id: 'terminal', label: "Hack Workstation Beta", color: '#ff2a85' },
+    { type: 'lecture', id: 'lecture', label: "Attend AI Holo-Lecture (+50 CR)", color: '#00f0ff' }
+  ];
+
+  // Baralhar (Fisher-Yates via PRNG)
+  for (let i = uniqueFeatures.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [uniqueFeatures[i], uniqueFeatures[j]] = [uniqueFeatures[j], uniqueFeatures[i]];
+  }
+
+  const buildings: CityLot[] = [];
+  const interactables: CityInteractable[] = [];
+  const props: { x: number; y: number; type: string; color?: string }[] = [];
+
+  allLots.forEach(lot => {
+    // Marcar Tiles do Lote
+    for (let lx = lot.x; lx < lot.x + lot.w; lx++) {
+      for (let ly = lot.y; ly < lot.y + lot.h; ly++) tiles[lx][ly] = 10;
+    }
+    const cx = Math.floor(lot.x + lot.w / 2);
+    const cy = Math.floor(lot.y + lot.h / 2);
+    const feature = uniqueFeatures.pop() || { type: 'generic', id: '', label: '', color: '#1e293b' };
+    
+    buildings.push({ ...lot, cx, cy, type: feature.type, color: feature.color });
+
+    if (feature.id) {
+      interactables.push({ x: cx, y: cy, id: feature.id, type: feature.type, label: feature.label });
+    }
+  });
+
+  // Detetar Vielas e Passeios para adereços
+  const lampColors = ['#00f0ff', '#ff2a85', '#f59e0b', '#a855f7'];
+  for (let x = 2; x < TOWN_SIZE - 2; x++) {
+    for (let y = 2; y < TOWN_SIZE - 2; y++) {
+      if (tiles[x][y] === 2) {
+        // Detectar se é uma Viela (Rodeado de lotes 10)
+        const isAlley = tiles[x-1][y] === 10 && tiles[x+1][y] === 10 || tiles[x][y-1] === 10 && tiles[x][y+1] === 10;
+        if (isAlley) tiles[x][y] = 3;
+        
+        validWalkTiles.push({ x, y });
+
+        // Espalhar Props proceduralmente
+        if (tiles[x][y] === 3 && rng() < 0.04) {
+          props.push({ x, y, type: 'steam' });
+        } else if (tiles[x][y] === 2 && rng() < 0.02) {
+          props.push({ x, y, type: 'lamp', color: lampColors[Math.floor(rng() * lampColors.length)] });
+        } else if (tiles[x][y] === 2 && rng() < 0.015) {
+          props.push({ x, y, type: 'bench' });
+        } else if (tiles[x][y] === 2 && rng() < 0.01) {
+          props.push({ x, y, type: 'vending', color: rng() > 0.5 ? 'drinks' : 'snacks' });
+          interactables.push({ x, y, id: 'vending', type: 'vending', label: "Open Cyber-Dispenser" });
+        }
+      }
+    }
+  }
+
+  // Colocar Drone Aleatório e Signpost
+  const walkTile1 = validWalkTiles[Math.floor(rng() * validWalkTiles.length)];
+  interactables.push({ x: walkTile1.x, y: walkTile1.y, id: 'repair', type: 'repair', label: "Reparar Drone (-15⚡)" });
+  props.push({ x: walkTile1.x, y: walkTile1.y, type: 'drone' });
+
+  const walkTile2 = validWalkTiles[Math.floor(rng() * validWalkTiles.length)];
+  props.push({ x: walkTile2.x, y: walkTile2.y, type: 'signpost' });
+
+  return { tiles, buildings, interactables, props, validWalkTiles };
+}
+
+// ============================================================================
+// COMPONENTE PRINCIPAL (REACT)
+// ============================================================================
+
 export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  
+  // 1. REF DE PROPS: Mantém o GameLoop sempre atualizado sem re-renderizar o Canvas
   const propsRef = useRef(props);
-
   useEffect(() => {
     propsRef.current = props;
   }, [props]);
 
-  const TOWN_SIZE = 46;
+  // 2. Geração da Cidade Procedural em Memória (Memoizada pela Semente)
+  const seed = props.gameState?.player?.name || 'Neopolis';
+  const cityMap = useMemo(() => generateProceduralCity(seed), [seed]);
 
+  // 3. ESTADO DO JOGO EM REFS: Evita o Virtual DOM
   const playerRef = useRef({
     x: props.gameState?.currentScene === 'town' ? 10 : 3,
     y: props.gameState?.currentScene === 'town' ? 10 : 3,
@@ -141,6 +306,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
   const mouseIsoRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const keysPressed = useRef<Set<string>>(new Set());
 
+  // Física e Tempo
   const lastTimeRef = useRef<number>(0);
   const tickRef = useRef<number>(0);
   
@@ -151,6 +317,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
   const storyNPCWalkersRef = useRef<Record<string, StoryNPCWalker>>({});
 
+  // Veículos - Tráfego da Cruz Central (Mantém-se ancorado para não quebrar a lógica)
   const trafficVehiclesRef = useRef<TrafficCar[]>([
     { id: 't1', lane: 'avenue_south', x: 21.5, y: 2, speed: 0.11, type: 'taxi', dir: 'SE' },
     { id: 't2', lane: 'avenue_south', x: 21.5, y: 22, speed: 0.14, type: 'speeder', dir: 'SE' },
@@ -162,37 +329,59 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
     { id: 't8', lane: 'boulevard_west', x: 18, y: 23.5, speed: 0.12, type: 'patrol', dir: 'NE' },
   ]);
 
-  const citizensRef = useRef<CitizenWalker[]>([
-    { id: 'cit_1', name: 'Cipher', x: 6, y: 9, dir: 'SE', speed: 0.045, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 6, y: 9 }, { x: 10, y: 9 }, { x: 15, y: 9 }, { x: 15, y: 15 }, { x: 8, y: 15 }], appearance: { name: 'Cipher', gender: 'neutral', origin: 'netrunner', skinTone: '#fbcfe8', hairStyle: 'mohawk', hairColor: '#00f0ff', implant: 'visor', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#1e1b4b', droneCompanion: 'none' }, greeting: 'Cipher: "Watch the crosswalks! Those hover-taxis take corners at full throttle."' },
-    { id: 'cit_2', name: 'Kira', x: 10, y: 6, dir: 'SW', speed: 0.04, pauseTicks: 20, waypointIndex: 0, waypoints: [{ x: 10, y: 6 }, { x: 10, y: 12 }, { x: 5, y: 12 }, { x: 5, y: 6 }], appearance: { name: 'Kira', gender: 'fem', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#ff2a85', implant: 'optic_ring', implantColor: '#ff2a85', outfitStyle: 'bomber', outfitColor: '#f43f5e', droneCompanion: 'none' }, greeting: 'Kira: "Bao’s cyber-ramen has real synth-chili oil today. Best fuel in District 1!"' },
-    { id: 'cit_3', name: 'Zero', x: 14, y: 8, dir: 'NE', speed: 0.042, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 14, y: 8 }, { x: 17, y: 8 }, { x: 17, y: 16 }, { x: 12, y: 16 }], appearance: { name: 'Zero', gender: 'masc', origin: 'mechanic', skinTone: '#e2e8f0', hairStyle: 'spiky', hairColor: '#facc15', implant: 'chrome_jaw', implantColor: '#94a3b8', outfitStyle: 'hoodie', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Zero: "Glitch & Grind got a shipment of quantum cyberdecks this morning."' },
-    { id: 'cit_4', name: 'Vex', x: 19, y: 19, dir: 'SE', speed: 0.05, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 18, y: 19 }, { x: 26, y: 19 }, { x: 28, y: 14 }, { x: 26, y: 19 }, { x: 18, y: 19 }], appearance: { name: 'Vex', gender: 'neutral', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'dreads', hairColor: '#a855f7', implant: 'visor', implantColor: '#a855f7', outfitStyle: 'duster', outfitColor: '#090d16', droneCompanion: 'none' }, greeting: 'Vex: "Heading across the avenue to the Academy lecture. Late again!"' },
-    { id: 'cit_5', name: 'Aero', x: 26, y: 26, dir: 'NW', speed: 0.048, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 26, y: 26 }, { x: 18, y: 26 }, { x: 14, y: 32 }, { x: 18, y: 26 }, { x: 26, y: 26 }], appearance: { name: 'Aero', gender: 'masc', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'slick', hairColor: '#38bdf8', implant: 'neural_jack', implantColor: '#38bdf8', outfitStyle: 'bomber', outfitColor: '#0284c7', droneCompanion: 'none' }, greeting: 'Aero: "Courier delivery run to the Capsule Towers. 5 minutes on the clock!"' },
-    { id: 'cit_6', name: 'Lyra', x: 30, y: 10, dir: 'SE', speed: 0.038, pauseTicks: 30, waypointIndex: 0, waypoints: [{ x: 30, y: 10 }, { x: 35, y: 10 }, { x: 35, y: 16 }, { x: 30, y: 16 }], appearance: { name: 'Lyra', gender: 'fem', origin: 'alchemist', skinTone: '#fbcfe8', hairStyle: 'pixie', hairColor: '#10b981', implant: 'optic_ring', implantColor: '#10b981', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Lyra: "The synth-flora spores near the campus quad have high biocell density today."' },
-    { id: 'cit_7', name: 'Shin', x: 36, y: 14, dir: 'NE', speed: 0.04, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 36, y: 14 }, { x: 42, y: 14 }, { x: 42, y: 8 }, { x: 36, y: 8 }], appearance: { name: 'Shin', gender: 'masc', origin: 'mechanic', skinTone: '#fcd34d', hairStyle: 'spiky', hairColor: '#f97316', implant: 'cyber_tattoo', implantColor: '#f97316', outfitStyle: 'hoodie', outfitColor: '#7c2d12', droneCompanion: 'none' }, greeting: 'Shin: "The maintenance drones keep getting ionized by the acid rain."' },
-    { id: 'cit_8', name: 'Rook', x: 8, y: 33, dir: 'SE', speed: 0.042, pauseTicks: 15, waypointIndex: 0, waypoints: [{ x: 8, y: 33 }, { x: 15, y: 33 }, { x: 15, y: 40 }, { x: 8, y: 40 }], appearance: { name: 'Rook', gender: 'masc', origin: 'mechanic', skinTone: '#94a3b8', hairStyle: 'mohawk', hairColor: '#ef4444', implant: 'chrome_jaw', implantColor: '#ef4444', outfitStyle: 'bomber', outfitColor: '#18181b', droneCompanion: 'none' }, greeting: 'Rook: "Capsule Pod 404 is a tight squeeze, but nothing beats that rooftop rain sound."' },
-    { id: 'cit_9', name: 'Maya', x: 12, y: 36, dir: 'SW', speed: 0.039, pauseTicks: 25, waypointIndex: 0, waypoints: [{ x: 12, y: 36 }, { x: 6, y: 36 }, { x: 6, y: 42 }, { x: 12, y: 42 }], appearance: { name: 'Maya', gender: 'fem', origin: 'netrunner', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#c084fc', implant: 'visor', implantColor: '#c084fc', outfitStyle: 'duster', outfitColor: '#312e81', droneCompanion: 'none' }, greeting: 'Maya: "The skybridge between blocks has an incredible view of the neon highway below."' },
-    { id: 'cit_10', name: 'Tate', x: 32, y: 33, dir: 'SE', speed: 0.046, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 32, y: 33 }, { x: 38, y: 33 }, { x: 38, y: 39 }, { x: 32, y: 39 }], appearance: { name: 'Tate', gender: 'neutral', origin: 'courier', skinTone: '#fbcfe8', hairStyle: 'slick', hairColor: '#00f0ff', implant: 'optic_ring', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Tate: "Next train on Line 01 arrives in 2 minutes. Neopolis transit never sleeps."' },
-    { id: 'cit_11', name: 'Orion', x: 35, y: 37, dir: 'NE', speed: 0.035, pauseTicks: 40, waypointIndex: 0, waypoints: [{ x: 35, y: 37 }, { x: 41, y: 37 }, { x: 41, y: 43 }, { x: 35, y: 43 }], appearance: { name: 'Orion', gender: 'masc', origin: 'alchemist', skinTone: '#e2e8f0', hairStyle: 'dreads', hairColor: '#22c55e', implant: 'neural_jack', implantColor: '#22c55e', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Orion: "The holographic light fountain is charged by the city’s quantum grid. Mesmerizing."' },
-    { id: 'cit_12', name: 'Echo', x: 40, y: 34, dir: 'SW', speed: 0.041, pauseTicks: 10, waypointIndex: 0, waypoints: [{ x: 40, y: 34 }, { x: 33, y: 34 }, { x: 33, y: 42 }, { x: 40, y: 42 }], appearance: { name: 'Echo', gender: 'fem', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'pixie', hairColor: '#f43f5e', implant: 'visor', implantColor: '#f43f5e', outfitStyle: 'bomber', outfitColor: '#881337', droneCompanion: 'none' }, greeting: 'Echo: "Check the giant holo-billboard across the plaza—they’re running Arasaka stock updates."' },
-  ]);
+  // Peões Procedurais - A sua localização inicial baseia-se nos passeios gerados (validWalkTiles)
+  const citizensRef = useRef<CitizenWalker[]>([]);
+  useEffect(() => {
+    const rng = createPRNG(seed + "_citizens");
+    const getWalkTile = () => cityMap.validWalkTiles[Math.floor(rng() * cityMap.validWalkTiles.length)] || { x: 10, y: 10 };
+    
+    // Nomes e Aparências Base
+    const baseCits = [
+      { name: 'Cipher', gender: 'neutral', origin: 'netrunner', hairColor: '#00f0ff', outfitColor: '#1e1b4b', greeting: 'Cipher: "Watch the crosswalks!"' },
+      { name: 'Kira', gender: 'fem', origin: 'courier', hairColor: '#ff2a85', outfitColor: '#f43f5e', greeting: 'Kira: "Best fuel in District 1!"' },
+      { name: 'Zero', gender: 'masc', origin: 'mechanic', hairColor: '#facc15', outfitColor: '#0f172a', greeting: 'Zero: "Glitch & Grind got a shipment..."' },
+      { name: 'Vex', gender: 'neutral', origin: 'netrunner', hairColor: '#a855f7', outfitColor: '#090d16', greeting: 'Vex: "Late to the Academy lecture again!"' },
+      { name: 'Aero', gender: 'masc', origin: 'courier', hairColor: '#38bdf8', outfitColor: '#0284c7', greeting: 'Aero: "5 minutes on the clock!"' },
+      { name: 'Lyra', gender: 'fem', origin: 'alchemist', hairColor: '#10b981', outfitColor: '#064e3b', greeting: 'Lyra: "High biocell density today."' },
+      { name: 'Shin', gender: 'masc', origin: 'mechanic', hairColor: '#f97316', outfitColor: '#7c2d12', greeting: 'Shin: "Maintenance drones are ionized."' },
+      { name: 'Rook', gender: 'masc', origin: 'mechanic', hairColor: '#ef4444', outfitColor: '#18181b', greeting: 'Rook: "Capsule Pod 404 is tight."' },
+      { name: 'Maya', gender: 'fem', origin: 'netrunner', hairColor: '#c084fc', outfitColor: '#312e81', greeting: 'Maya: "Incredible view of the highway."' },
+      { name: 'Tate', gender: 'neutral', origin: 'courier', hairColor: '#00f0ff', outfitColor: '#0f172a', greeting: 'Tate: "Next train in 2 minutes."' },
+      { name: 'Orion', gender: 'masc', origin: 'alchemist', hairColor: '#22c55e', outfitColor: '#064e3b', greeting: 'Orion: "Fountain is charged by the grid."' },
+      { name: 'Echo', gender: 'fem', origin: 'netrunner', hairColor: '#f43f5e', outfitColor: '#881337', greeting: 'Echo: "Running Arasaka stock updates."' },
+    ];
+
+    citizensRef.current = baseCits.map((base, i) => {
+      const start = getWalkTile();
+      return {
+        id: `cit_${i}`,
+        name: base.name,
+        x: start.x, y: start.y,
+        dir: 'SE', speed: 0.035 + rng() * 0.02,
+        pauseTicks: Math.floor(rng() * 30),
+        waypointIndex: 0,
+        waypoints: [start, getWalkTile(), getWalkTile(), getWalkTile()],
+        appearance: { 
+          name: base.name, gender: base.gender as any, origin: base.origin as any, skinTone: '#fed7aa',
+          hairStyle: 'slick', hairColor: base.hairColor, implant: 'visor', implantColor: base.hairColor,
+          outfitStyle: 'bomber', outfitColor: base.outfitColor, droneCompanion: 'none'
+        },
+        greeting: base.greeting
+      };
+    });
+  }, [seed, cityMap]);
 
   const addFloatingText = useCallback((text: string, color = '#38bdf8') => {
     floatingTextsRef.current.push({
-      id: Math.random().toString(),
-      text,
-      x: playerRef.current.x,
-      y: playerRef.current.y,
-      color,
-      createdAt: Date.now(),
+      id: Math.random().toString(), text, x: playerRef.current.x, y: playerRef.current.y, color, createdAt: Date.now(),
     });
   }, []);
 
+  // Controlos de Teclado
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
       keysPressed.current.add(e.key.toLowerCase());
-
       if (e.key === 'e' || e.key === 'E' || e.key === ' ') {
         if (currentPromptRef.current) {
           e.preventDefault();
@@ -204,12 +393,12 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown);
-      window.removeEventListener('keyup', handleKeyUp);
-    };
+    return () => { window.removeEventListener('keydown', handleKeyDown); window.removeEventListener('keyup', handleKeyUp); };
   }, []);
 
+  // ============================================================================
+  // MAIN ANIMATION LOOP (Blindado e Otimizado para Procedural)
+  // ============================================================================
   useEffect(() => {
     let animId: number;
     const canvas = canvasRef.current;
@@ -219,14 +408,10 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
     const gameLoop = (time: number) => {
       try {
-        if (lastTimeRef.current === 0) {
-          lastTimeRef.current = time;
-          return;
-        }
+        if (lastTimeRef.current === 0) { lastTimeRef.current = time; return; }
         
         let dt = (time - lastTimeRef.current) / 1000;
         lastTimeRef.current = time;
-        
         if (dt > 0.1) dt = 0.016;
         if (dt <= 0) dt = 0.001;
 
@@ -237,11 +422,11 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
         const pProps = propsRef.current;
         const { gameState } = pProps;
-        
         if (!gameState) return;
 
         const currentHouse = gameState.houses?.find(h => h.id === gameState.currentHouseId) || gameState.houses?.[0];
 
+        // Partículas Clima
         floatingTextsRef.current = floatingTextsRef.current.filter(t => now - t.createdAt < 1800);
 
         if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
@@ -250,9 +435,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           }
           ripplesRef.current.forEach(r => { r.progress += 0.045 * timeScale; });
           ripplesRef.current = ripplesRef.current.filter(r => r.progress < 1.0);
-        } else {
-          ripplesRef.current = [];
-        }
+        } else { ripplesRef.current = []; }
 
         if (gameState.weather === 'glitch_storm') {
           if (now > nextLightningTimeRef.current) {
@@ -261,14 +444,10 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           } else {
             lightningFlashRef.current = Math.max(0, lightningFlashRef.current - 0.07 * timeScale);
           }
-        } else {
-          lightningFlashRef.current = 0;
-        }
+        } else { lightningFlashRef.current = 0; }
 
-        let dx = 0;
-        let dy = 0;
-        const speed = 0.085 * timeScale;
-
+        // 1. Processamento de Movimento
+        let dx = 0; let dy = 0; const speed = 0.085 * timeScale;
         if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) { dx -= speed; dy -= speed; }
         if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) { dx += speed; dy += speed; }
         if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) { dx -= speed; dy += speed; }
@@ -278,37 +457,29 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         playerRef.current.isMoving = isWalking;
 
         if (isWalking) {
-          if (now - lastStepSoundTimeRef.current > 320) {
-            sound.playStep();
-            lastStepSoundTimeRef.current = now;
-          }
-
+          if (now - lastStepSoundTimeRef.current > 320) { sound.playStep(); lastStepSoundTimeRef.current = now; }
           if (dx > 0 && dy >= 0) playerRef.current.dir = 'SE';
           else if (dx < 0 && dy <= 0) playerRef.current.dir = 'NW';
           else if (dy > 0 && dx <= 0) playerRef.current.dir = 'SW';
           else if (dy < 0 && dx >= 0) playerRef.current.dir = 'NE';
 
-          let nextX = playerRef.current.x + dx;
-          let nextY = playerRef.current.y + dy;
-
+          let nextX = playerRef.current.x + dx; let nextY = playerRef.current.y + dy;
           if (gameState.currentScene === 'town') {
             nextX = Math.max(1, Math.min(TOWN_SIZE - 2, nextX));
             nextY = Math.max(1, Math.min(TOWN_SIZE - 2, nextY));
           } else if (gameState.currentScene === 'interior') {
             const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
-            const maxW = est ? est.interiorSize.width : 8;
-            const maxH = est ? est.interiorSize.height : 8;
+            const maxW = est ? est.interiorSize.width : 8; const maxH = est ? est.interiorSize.height : 8;
             nextX = Math.max(0.5, Math.min(maxW - 0.8, nextX));
             nextY = Math.max(0.5, Math.min(maxH - 0.8, nextY));
           } else if (currentHouse) {
             nextX = Math.max(0.5, Math.min(currentHouse.gridWidth - 0.8, nextX));
             nextY = Math.max(0.5, Math.min(currentHouse.gridHeight - 0.8, nextY));
           }
-
-          playerRef.current.x = nextX;
-          playerRef.current.y = nextY;
+          playerRef.current.x = nextX; playerRef.current.y = nextY;
         }
 
+        // 2. Camera Tracking
         const playerScreen = {
           x: (playerRef.current.x - playerRef.current.y) * (TILE_WIDTH / 2),
           y: (playerRef.current.x + playerRef.current.y) * (TILE_HEIGHT / 2),
@@ -316,6 +487,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * (0.1 * timeScale);
         cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * (0.1 * timeScale);
 
+        // 3. Setup de Renderização Base
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         const atmosphere = getWeatherAtmosphere(gameState.weather, gameState.timeHour);
         const skyGrad = ctx.createLinearGradient(0, 0, 0, canvas.height);
@@ -327,8 +499,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         if (gameState.weather === 'cyber_clear') {
           ctx.fillStyle = '#ffffff';
           for (let i = 0; i < 40; i++) {
-            const sx = ((i * 137) % canvas.width);
-            const sy = ((i * 89) % Math.max(120, canvas.height * 0.45));
+            const sx = ((i * 137) % canvas.width); const sy = ((i * 89) % Math.max(120, canvas.height * 0.45));
             const twinkle = (Math.sin(tick * 2 + i) + 1) / 2;
             ctx.globalAlpha = 0.2 + twinkle * 0.65;
             ctx.fillRect(sx, sy, 1.5, 1.5);
@@ -336,6 +507,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           ctx.globalAlpha = 1.0;
         }
 
+        // 4. Lógica de Tráfego e Peões
         let trafficState: TrafficLightState = 'avenue_green';
         if (gameState.currentScene === 'town') {
           const trafficSec = (now / 1000) % 16;
@@ -348,8 +520,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           const isBoulevardOpen = trafficState === 'boulevard_green';
 
           trafficVehiclesRef.current.forEach(veh => {
-            let shouldStop = false;
-            const adjustedSpeed = veh.speed * timeScale;
+            let shouldStop = false; const adjustedSpeed = veh.speed * timeScale;
             if (veh.lane === 'avenue_south') {
               if (!isAvenueOpen && veh.y >= 17.5 && veh.y <= 20.2) shouldStop = true;
               if (trafficVehiclesRef.current.find(o => o.id !== veh.id && o.lane === 'avenue_south' && o.y > veh.y && o.y - veh.y < 4.0)) shouldStop = true;
@@ -423,29 +594,31 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           });
         }
 
+        // 5. Renderização do Chão (Baseada no Mapa Procedural)
         if (gameState.currentScene === 'town') {
           for (let x = 0; x < TOWN_SIZE; x++) {
             for (let y = 0; y < TOWN_SIZE; y++) {
               const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
               if (screen.x < -64 || screen.x > canvas.width + 64 || screen.y < -64 || screen.y > canvas.height + 64) continue;
-              const isAvenue = x >= 21 && x <= 24; const isBoulevard = y >= 21 && y <= 24; const isRoad = isAvenue || isBoulevard; const isIntersection = isAvenue && isBoulevard;
-              const isCrosswalk = (isAvenue && ((y >= 19 && y <= 20) || (y >= 25 && y <= 26))) || (isBoulevard && ((x >= 19 && x <= 20) || (x >= 25 && x <= 26)));
-              const isCurb = (x === 20 || x === 25 || y === 20 || y === 25) && !isRoad;
+              
+              const tileType = cityMap.tiles[x][y];
               let fillColor = '#101524'; let strokeColor = 'rgba(28, 38, 59, 0.45)';
-              if (gameState.weather === 'acid_fog') { fillColor = '#0d1611'; strokeColor = 'rgba(163, 230, 53, 0.16)'; } else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') { fillColor = '#080d1a'; strokeColor = 'rgba(0, 240, 255, 0.2)'; }
+              
+              if (gameState.weather === 'acid_fog') { fillColor = '#0d1611'; strokeColor = 'rgba(163, 230, 53, 0.16)'; } 
+              else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') { fillColor = '#080d1a'; strokeColor = 'rgba(0, 240, 255, 0.2)'; }
 
-              if (isRoad) {
-                fillColor = isIntersection ? '#060913' : '#080c18'; strokeColor = 'rgba(30, 41, 59, 0.35)';
+              if (tileType === 0) { // Road
+                fillColor = '#080c18'; strokeColor = 'rgba(30, 41, 59, 0.35)';
                 drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
-                if ((x === 22 || x === 23) && isAvenue && !isCrosswalk && !isIntersection && y % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.35)', '#00f0ff');
-                else if ((y === 22 || y === 23) && isBoulevard && !isCrosswalk && !isIntersection && x % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(245, 158, 11, 0.35)', '#f59e0b');
-                if (isCrosswalk && (x + y) % 2 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
+                if ((x === 22 || x === 23) && y % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.35)', '#00f0ff');
+                else if ((y === 22 || y === 23) && x % 3 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(245, 158, 11, 0.35)', '#f59e0b');
+              } else if (tileType === 1) { // Crosswalk
+                drawIsoTile(ctx, screen.x, screen.y, '#080c18', 'rgba(30, 41, 59, 0.35)');
+                if ((x + y) % 2 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
               } else {
-                if (isCurb) { fillColor = '#1c2438'; strokeColor = 'rgba(255, 42, 133, 0.5)'; }
-                else if (x < 20 && y < 20) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.25)'; }
-                else if (x > 25 && y < 20) { const isCQ = x >= 30 && x <= 38 && y >= 8 && y <= 16; fillColor = isCQ ? ((x + y) % 2 === 0 ? '#182035' : '#141a2c') : '#111625'; strokeColor = isCQ ? 'rgba(255, 42, 133, 0.35)' : 'rgba(0, 240, 255, 0.2)'; }
-                else if (x < 20 && y > 25) { fillColor = (x + y) % 2 === 0 ? '#121727' : '#0e1320'; strokeColor = 'rgba(56, 189, 248, 0.25)'; }
-                else if (x > 25 && y > 25) { fillColor = (x + y) % 2 === 0 ? '#161d31' : '#13192a'; strokeColor = 'rgba(168, 85, 247, 0.3)'; }
+                if (tileType === 3) { fillColor = '#0f172a'; strokeColor = 'rgba(168, 85, 247, 0.15)'; } // Alley
+                else if (tileType >= 10) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.15)'; } // Lots
+                
                 drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
                 if ((gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') && (x + y) % 4 === 0) {
                   const sheen = (Math.sin(tick * 3.5 + x * 2 + y) + 1) / 2;
@@ -485,67 +658,57 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           }
         }
 
+        // 6. Depth Sorted Render Queue
         interface DepthItem { depth: number; draw: () => void; }
         const renderQueue: DepthItem[] = [];
 
         if (gameState.currentScene === 'town') {
-          renderQueue.push({ depth: 4 + 2, draw: () => { const s = isoToScreen(4, 2, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'QUANTUM CORP', 6, tick, 1, '#00f0ff'); } });
-          renderQueue.push({ depth: 4 + 8, draw: () => { const s = isoToScreen(4, 8, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(245, 158, 11, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'bazaar', 1); } });
-          renderQueue.push({ depth: 4 + 15, draw: () => { const s = isoToScreen(4, 15, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'clinic', 1); } });
-          renderQueue.push({ depth: 10 + 6, draw: () => { const s = isoToScreen(10, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(239, 68, 68, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'ramen', 1); } });
-          renderQueue.push({ depth: 10 + 14, draw: () => { const s = isoToScreen(10, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(192, 132, 252, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'blackice', 1); } });
-          renderQueue.push({ depth: 16 + 6, draw: () => { const s = isoToScreen(16, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(234, 179, 8, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'realty', 1); } });
-          renderQueue.push({ depth: 16 + 14, draw: () => { const s = isoToScreen(16, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(16, 185, 129, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'greenhouse', 1); } });
-          renderQueue.push({ depth: 8 + 11, draw: () => { const s = isoToScreen(8, 11, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(0, 240, 255, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'drinks'); } });
-
-          [{ x: 6, y: 5, color: '#00f0ff' }, { x: 6, y: 12, color: '#ff2a85' }, { x: 14, y: 5, color: '#00f0ff' }, { x: 14, y: 12, color: '#f59e0b' }].forEach(l => {
-            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
-          });
-          [{ x: 10, y: 10, student: false }, { x: 14, y: 9, student: true }].forEach(b => {
-            renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
-          });
-          renderQueue.push({ depth: 7 + 7, draw: () => { const s = isoToScreen(7, 7, cameraRef.current, canvas.width, canvas.height); drawTrashBinAndHydrant(ctx, s.x, s.y, 1); } });
-
-          renderQueue.push({ depth: 38 + 7, draw: () => { const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x + 35, s.y - 40, 65, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawVolumetricLight(ctx, s.x - 40, s.y - 95, 60, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawAcademyComplex(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 33 + 13, draw: () => { const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloLectureStage(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 28 + 7, draw: () => { const s = isoToScreen(28, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
-          renderQueue.push({ depth: 28 + 14, draw: () => { const s = isoToScreen(28, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
-
-          [{ x: 33, y: 6 }, { x: 38, y: 16 }, { x: 42, y: 11 }].forEach(t => {
-            renderQueue.push({ depth: t.x + t.y, draw: () => { const s = isoToScreen(t.x, t.y, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 35, 40, 'rgba(0, 245, 212, 0.28)', gameState.weather); drawCyberTree(ctx, s.x, s.y, tick, 1); } });
+          
+          // Render Procedural Buildings
+          cityMap.buildings.forEach(b => {
+            renderQueue.push({
+              depth: b.cx + b.cy,
+              draw: () => {
+                const s = isoToScreen(b.cx, b.cy, cameraRef.current, canvas.width, canvas.height);
+                if (b.type === 'academy') drawAcademyComplex(ctx, s.x, s.y, tick, 1);
+                else if (b.type === 'megapod') drawSkyscraperTower(ctx, s.x, s.y, 'ARASAKA MEGAPOD', 5, tick, 1, '#ef4444');
+                else if (b.type === 'metro') drawMetroStation(ctx, s.x, s.y, tick, 1);
+                else if (b.type === 'fountain') drawCyberFountain(ctx, s.x, s.y, tick, 1);
+                else if (b.type === 'kiosk') drawHackerKiosk(ctx, s.x, s.y, tick, 1, true);
+                else if (b.type === 'lecture') drawHoloLectureStage(ctx, s.x, s.y, tick, 1);
+                else if (['ramen', 'clinic', 'bazaar', 'blackice', 'realty', 'greenhouse'].includes(b.type)) {
+                  drawBuildingFacade(ctx, s.x, s.y, b.type as any, 1);
+                  drawVolumetricLight(ctx, s.x, s.y - 30, 45, `${b.color}40`, gameState.weather);
+                }
+                else drawSkyscraperTower(ctx, s.x, s.y, 'CORP TOWER', 3, tick, 1, b.color);
+              }
+            });
           });
 
-          renderQueue.push({ depth: 29 + 11, draw: () => { const s = isoToScreen(29, 11, cameraRef.current, canvas.width, canvas.height); drawCampusSignpost(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 40 + 14, draw: () => { const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height); ctx.fillStyle = '#f59e0b'; ctx.fillRect(s.x - 7, s.y - 16 + Math.sin(tick * 4) * 2, 14, 12); if (Math.random() > 0.6) { ctx.fillStyle = '#ffffff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 22, 2, 2); ctx.fillStyle = '#00f0ff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 18, 2, 2); } } });
-
-          [{ x: 27, y: 5, color: '#00f0ff' }, { x: 35, y: 5, color: '#ff2a85' }, { x: 27, y: 17, color: '#00f0ff' }].forEach(l => {
-            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+          // Render Procedural Props (Benches, Lamps, Trees, Vending)
+          cityMap.props.forEach(p => {
+            renderQueue.push({
+              depth: p.x + p.y,
+              draw: () => {
+                const s = isoToScreen(p.x, p.y, cameraRef.current, canvas.width, canvas.height);
+                if (p.type === 'steam') drawSteamGrate(ctx, s.x, s.y, tick, 1);
+                else if (p.type === 'lamp') drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, p.color);
+                else if (p.type === 'bench') drawCyberBench(ctx, s.x, s.y, false, tick, 1);
+                else if (p.type === 'vending') {
+                  drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(0, 240, 255, 0.28)', gameState.weather);
+                  drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, p.color as any);
+                }
+                else if (p.type === 'drone') drawSurveillanceDrone(ctx, s.x, s.y - 32, tick, 1);
+                else if (p.type === 'signpost') drawCampusSignpost(ctx, s.x, s.y, tick, 1);
+              }
+            });
           });
 
-          renderQueue.push({ depth: 5 + 28, draw: () => { const s = isoToScreen(5, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'ARASAKA MEGAPOD', 5, tick, 1, '#ef4444'); } });
-          renderQueue.push({ depth: 14 + 28, draw: () => { const s = isoToScreen(14, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'CAPSULE RESIDENCE', 4, tick, 1, '#38bdf8'); } });
+          // Elementos Fixos Decorativos
           renderQueue.push({ depth: 9 + 28, draw: () => { const s = isoToScreen(9, 28, cameraRef.current, canvas.width, canvas.height); drawPedestrianSkybridge(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 7 + 36, draw: () => { const s = isoToScreen(7, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(139, 92, 246, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#8b5cf6', 1); } });
-          renderQueue.push({ depth: 14 + 36, draw: () => { const s = isoToScreen(14, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#06b6d4', 1); } });
-          renderQueue.push({ depth: 10 + 41, draw: () => { const s = isoToScreen(10, 41, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(245, 158, 11, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'snacks'); } });
+          renderQueue.push({ depth: 42 + 32, draw: () => { const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height); drawHoloBillboard(ctx, s.x, s.y, tick, 1); } });
 
-          [{ x: 6, y: 33, color: '#38bdf8' }, { x: 14, y: 33, color: '#ff2a85' }, { x: 6, y: 42, color: '#38bdf8' }].forEach(l => {
-            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
-          });
-          renderQueue.push({ depth: 11 + 35, draw: () => { const s = isoToScreen(11, 35, cameraRef.current, canvas.width, canvas.height); drawSteamGrate(ctx, s.x, s.y, tick, 1); } });
-
-          renderQueue.push({ depth: 35 + 29, draw: () => { const s = isoToScreen(35, 29, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 55, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawMetroStation(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 33 + 38, draw: () => { const s = isoToScreen(33, 38, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 50, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawCyberFountain(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 42 + 32, draw: () => { const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 50, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloBillboard(ctx, s.x, s.y, tick, 1); } });
-          renderQueue.push({ depth: 42 + 39, draw: () => { const s = isoToScreen(42, 39, cameraRef.current, canvas.width, canvas.height); drawCyberVendingMachine(ctx, s.x - 14, s.y, tick, 1, 'drinks'); drawCyberVendingMachine(ctx, s.x + 14, s.y, tick, 1, 'snacks'); } });
-
-          [{ x: 28, y: 36, student: false }, { x: 38, y: 40, student: true }].forEach(b => {
-            renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
-          });
-          [{ x: 27, y: 31, color: '#a855f7' }, { x: 38, y: 31, color: '#00f0ff' }, { x: 27, y: 42, color: '#a855f7' }].forEach(l => {
-            renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
-          });
-
+          // Semáforos e Tráfego
           const trafficSecNow = (now / 1000) % 16;
           const avenueLightNow = trafficSecNow < 6 ? 'green' : trafficSecNow < 8 ? 'yellow' : 'red';
           const boulevardLightNow = (trafficSecNow >= 8 && trafficSecNow < 14) ? 'green' : (trafficSecNow >= 14 ? 'yellow' : 'red');
@@ -555,10 +718,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           [{ x: 20, y: 20, l1: avenueLightNow, w: boulevardWalk }, { x: 25, y: 20, l1: boulevardLightNow, w: avenueWalk }, { x: 20, y: 25, l1: boulevardLightNow, w: avenueWalk }, { x: 25, y: 25, l1: avenueLightNow, w: boulevardWalk }].forEach(post => {
             renderQueue.push({ depth: post.x + post.y, draw: () => { const s = isoToScreen(post.x, post.y, cameraRef.current, canvas.width, canvas.height); drawTrafficLightSignal(ctx, s.x, s.y, post.l1 as any, post.w, 1); } });
           });
-
-          const droneIsoX = 22.5 + Math.sin(tick * 0.7) * 4.5;
-          const droneIsoY = 22.5 + Math.cos(tick * 0.7) * 4.5;
-          renderQueue.push({ depth: Math.floor(droneIsoX + droneIsoY) + 1, draw: () => { const s = isoToScreen(droneIsoX, droneIsoY, cameraRef.current, canvas.width, canvas.height); drawSurveillanceDrone(ctx, s.x, s.y - 32, tick, 1); } });
 
           trafficVehiclesRef.current.forEach(veh => {
             renderQueue.push({ depth: veh.x + veh.y, draw: () => { const s = isoToScreen(veh.x, veh.y, cameraRef.current, canvas.width, canvas.height); drawMovingTrafficVehicle(ctx, s.x, s.y, veh.type, veh.dir, tick, 1); } });
@@ -571,22 +730,17 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           Object.values(gameState.npcs || {}).forEach(npc => {
             if (!npc) return;
             const walker = storyNPCWalkersRef.current[npc.id] || { id: npc.id, currentX: npc.x, currentY: npc.y, targetX: npc.x, targetY: npc.y, dir: 'SE', isWalking: false, speed: 0.045, pauseTicks: 0, currentSlot: getNPCScheduleForHour(npc, gameState.timeHour), statusMessage: npc.role };
-            const posX = walker.currentX;
-            const posY = walker.currentY;
+            const posX = walker.currentX; const posY = walker.currentY;
 
             renderQueue.push({
               depth: posX + posY,
               draw: () => {
                 const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
                 drawCharacter(ctx, s.x, s.y, { 
-                  name: npc.name?.split(' ')[0] || 'NPC', 
-                  skinTone: npc.avatarStyle?.skin || '#fbcfe8', 
-                  hairStyle: npc.avatarStyle?.hairStyle || 'slick', 
-                  hairColor: npc.avatarStyle?.hair || '#00f0ff', 
-                  implant: npc.portraitImplant || 'visor', 
-                  implantColor: npc.portraitColor || '#00f0ff', 
-                  outfitStyle: npc.avatarStyle?.outfit || 'duster', 
-                  outfitColor: npc.portraitColor || '#0f172a' 
+                  name: npc.name?.split(' ')[0] || 'NPC', skinTone: npc.avatarStyle?.skin || '#fbcfe8', 
+                  hairStyle: npc.avatarStyle?.hairStyle || 'slick', hairColor: npc.avatarStyle?.hair || '#00f0ff', 
+                  implant: npc.portraitImplant || 'visor', implantColor: npc.portraitColor || '#00f0ff', 
+                  outfitStyle: npc.avatarStyle?.outfit || 'duster', outfitColor: npc.portraitColor || '#0f172a' 
                 }, walker.dir, walker.isWalking, tick, 1);
 
                 const distToPlayer = Math.hypot(playerRef.current.x - posX, playerRef.current.y - posY);
@@ -601,12 +755,9 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
 
                   ctx.fillStyle = 'rgba(6, 11, 25, 0.88)';
                   ctx.strokeStyle = walker.isWalking ? '#f59e0b' : (npc.portraitColor || '#00f0ff');
-                  ctx.lineWidth = 1;
-                  ctx.beginPath();
+                  ctx.lineWidth = 1; ctx.beginPath();
                   ctx.roundRect(s.x - badgeWidth / 2, badgeY - 12, badgeWidth, 20, 4);
-                  ctx.fill();
-                  ctx.stroke();
-
+                  ctx.fill(); ctx.stroke();
                   ctx.fillStyle = npc.portraitColor || '#00f0ff';
                   ctx.fillText(nameText, s.x, badgeY - 2);
                   ctx.font = '7.5px monospace';
@@ -616,17 +767,12 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
                   if (distToPlayer < 3.5 && walker.currentSlot) {
                     const actText = walker.isWalking ? `En route: ${walker.currentSlot.locationName}` : walker.currentSlot.activity;
                     ctx.font = '8px monospace';
-                    const actWidth = ctx.measureText(actText).width + 12;
-                    const bubbleY = s.y - 70;
-                    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
-                    ctx.strokeStyle = '#00f0ff';
-                    ctx.lineWidth = 1;
-                    ctx.beginPath();
+                    const actWidth = ctx.measureText(actText).width + 12; const bubbleY = s.y - 70;
+                    ctx.fillStyle = 'rgba(15, 23, 42, 0.94)'; ctx.strokeStyle = '#00f0ff';
+                    ctx.lineWidth = 1; ctx.beginPath();
                     ctx.roundRect(s.x - actWidth / 2, bubbleY - 9, actWidth, 16, 4);
-                    ctx.fill();
-                    ctx.stroke();
-                    ctx.fillStyle = '#00f0ff';
-                    ctx.fillText(actText, s.x, bubbleY + 2);
+                    ctx.fill(); ctx.stroke();
+                    ctx.fillStyle = '#00f0ff'; ctx.fillText(actText, s.x, bubbleY + 2);
                   }
                   ctx.restore();
                 }
@@ -649,32 +795,22 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
                 draw: () => {
                   const s = isoToScreen(3, 2, cameraRef.current, canvas.width, canvas.height);
                   drawCharacter(ctx, s.x, s.y, { name: npc.name, skinTone: npc.avatarStyle?.skin || '#fbd0b4', hairStyle: (npc.avatarStyle?.hairStyle as any) || 'slick', hairColor: npc.portraitHair || '#00f0ff', implant: (npc.portraitImplant as any) || 'visor', implantColor: npc.portraitColor || '#00f0ff', outfitStyle: (npc.avatarStyle?.outfit as any) || 'duster', outfitColor: npc.portraitColor || '#38bdf8', droneCompanion: 'none' }, 'SE', false, tick, 1);
-                  ctx.save();
-                  ctx.textAlign = 'center';
-                  ctx.font = 'bold 9px "Chakra Petch", sans-serif';
-                  ctx.fillStyle = npc.portraitColor || '#00f0ff';
-                  ctx.fillText(npc.name, s.x, s.y - 48);
-                  ctx.font = '8px monospace';
-                  ctx.fillStyle = '#fbbf24';
-                  ctx.fillText(`★ ${npc.role}`, s.x, s.y - 36);
+                  ctx.save(); ctx.textAlign = 'center'; ctx.font = 'bold 9px "Chakra Petch", sans-serif';
+                  ctx.fillStyle = npc.portraitColor || '#00f0ff'; ctx.fillText(npc.name, s.x, s.y - 48);
+                  ctx.font = '8px monospace'; ctx.fillStyle = '#fbbf24'; ctx.fillText(`★ ${npc.role}`, s.x, s.y - 36);
                   ctx.restore();
                 },
               });
             }
 
-            const exitX = est.interiorSize.width - 1;
-            const exitY = est.interiorSize.height - 1;
+            const exitX = est.interiorSize.width - 1; const exitY = est.interiorSize.height - 1;
             renderQueue.push({
               depth: exitX + exitY + 0.1,
               draw: () => {
                 const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
-                ctx.fillStyle = '#ef4444';
-                ctx.fillRect(s.x - 14, s.y - 22, 28, 22);
-                ctx.fillStyle = '#ffffff';
-                ctx.font = '700 8px "Chakra Petch", sans-serif';
-                ctx.textAlign = 'center';
-                ctx.fillText('SAIR', s.x, s.y - 12);
-                ctx.fillText('NEOPOLIS', s.x, s.y - 4);
+                ctx.fillStyle = '#ef4444'; ctx.fillRect(s.x - 14, s.y - 22, 28, 22);
+                ctx.fillStyle = '#ffffff'; ctx.font = '700 8px "Chakra Petch", sans-serif';
+                ctx.textAlign = 'center'; ctx.fillText('SAIR', s.x, s.y - 12); ctx.fillText('NEOPOLIS', s.x, s.y - 4);
               },
             });
           }
@@ -688,27 +824,19 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
                 const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height);
                 const isSelected = pProps.selectedPlacedId === item.instanceId;
                 drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1);
-                if (isSelected) {
-                  ctx.strokeStyle = '#06b6d4';
-                  ctx.lineWidth = 2;
-                  ctx.strokeRect(s.x - 20, s.y - 24, 40, 28);
-                }
+                if (isSelected) { ctx.strokeStyle = '#06b6d4'; ctx.lineWidth = 2; ctx.strokeRect(s.x - 20, s.y - 24, 40, 28); }
               },
             });
           });
 
-          const exitX = currentHouse.gridWidth - 1;
-          const exitY = currentHouse.gridHeight - 1;
+          const exitX = currentHouse.gridWidth - 1; const exitY = currentHouse.gridHeight - 1;
           renderQueue.push({
             depth: exitX + exitY + 0.1,
             draw: () => {
               const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
-              ctx.fillStyle = '#ef4444';
-              ctx.fillRect(s.x - 12, s.y - 20, 24, 20);
-              ctx.fillStyle = '#ffffff';
-              ctx.font = '700 8px "Chakra Petch", sans-serif';
-              ctx.textAlign = 'center';
-              ctx.fillText('EXIT TO CITY', s.x, s.y - 12);
+              ctx.fillStyle = '#ef4444'; ctx.fillRect(s.x - 12, s.y - 20, 24, 20);
+              ctx.fillStyle = '#ffffff'; ctx.font = '700 8px "Chakra Petch", sans-serif';
+              ctx.textAlign = 'center'; ctx.fillText('EXIT TO CITY', s.x, s.y - 12);
             },
           });
         }
@@ -720,8 +848,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
             drawCharacter(
               ctx, s.x, s.y,
               {
-                name: gameState.player?.name || 'Player',
-                skinTone: gameState.player?.skinTone || '#fbcfe8',
+                name: gameState.player?.name || 'Player', skinTone: gameState.player?.skinTone || '#fbcfe8',
                 hairStyle: gameState.equippedCosmetics?.hairStyle || gameState.player?.hairStyle || 'slick',
                 hairColor: gameState.equippedCosmetics?.hairColor || gameState.player?.hairColor || '#00f0ff',
                 implant: gameState.equippedCosmetics?.implant || gameState.player?.implant || 'visor',
@@ -730,10 +857,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
                 outfitColor: gameState.equippedCosmetics?.outfitColor || gameState.player?.outfitColor || '#0f172a',
                 droneCompanion: (gameState.equippedCosmetics?.drone as any) || gameState.player?.droneCompanion || 'none',
               },
-              playerRef.current.dir,
-              playerRef.current.isMoving,
-              tick,
-              1
+              playerRef.current.dir, playerRef.current.isMoving, tick, 1
             );
           },
         });
@@ -742,21 +866,17 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         renderQueue.forEach(item => item.draw());
 
         if (pProps.isDecorateMode && pProps.selectedCatalogItem && currentHouse) {
-          const mx = Math.floor(mouseIsoRef.current.x);
-          const my = Math.floor(mouseIsoRef.current.y);
+          const mx = Math.floor(mouseIsoRef.current.x); const my = Math.floor(mouseIsoRef.current.y);
           if (mx >= 0 && mx < currentHouse.gridWidth && my >= 0 && my < currentHouse.gridHeight) {
             const s = isoToScreen(mx + pProps.selectedCatalogItem.width / 2, my + pProps.selectedCatalogItem.height / 2, cameraRef.current, canvas.width, canvas.height);
-            ctx.save();
-            ctx.globalAlpha = 0.65;
-            drawFurniture(ctx, s.x, s.y, pProps.selectedCatalogItem, 0, 1);
-            ctx.restore();
+            ctx.save(); ctx.globalAlpha = 0.65; drawFurniture(ctx, s.x, s.y, pProps.selectedCatalogItem, 0, 1); ctx.restore();
           }
         }
 
         drawWeatherOverlay(ctx, canvas.width, canvas.height, tick, gameState.weather, lightningFlashRef.current, ripplesRef.current, gameState.timeHour);
 
         // =========================================================================
-        // PIPELINE GRÁFICO (SHADERS DE POST-PROCESSING)
+        // PIPELINE GRÁFICO (SHADERS DE POST-PROCESSING CRT)
         // =========================================================================
         const glitchIntensity = (gameState.weather === 'glitch_storm') ? 6 : 2;
         applyChromaticAberration(ctx, canvas.width, canvas.height, glitchIntensity);
@@ -764,65 +884,62 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
         // =========================================================================
 
         floatingTextsRef.current.forEach(ft => {
-          const age = now - ft.createdAt;
-          const ageRatio = age / 1800;
+          const age = now - ft.createdAt; const ageRatio = age / 1800;
           const s = isoToScreen(ft.x, ft.y, cameraRef.current, canvas.width, canvas.height);
           const floatY = s.y - 35 - ageRatio * 45;
 
-          ctx.save();
-          ctx.globalAlpha = Math.max(0, 1 - ageRatio);
-          ctx.font = 'bold 12px "Press Start 2P", monospace';
-          ctx.textAlign = 'center';
-          ctx.fillStyle = ft.color;
-          ctx.shadowColor = ft.color;
-          ctx.shadowBlur = 8;
-          ctx.fillText(ft.text, s.x, floatY);
-          ctx.restore();
+          ctx.save(); ctx.globalAlpha = Math.max(0, 1 - ageRatio); ctx.font = 'bold 12px "Press Start 2P", monospace';
+          ctx.textAlign = 'center'; ctx.fillStyle = ft.color; ctx.shadowColor = ft.color;
+          ctx.shadowBlur = 8; ctx.fillText(ft.text, s.x, floatY); ctx.restore();
         });
 
         let foundPrompt = null;
-        const px = playerRef.current.x;
-        const py = playerRef.current.y;
+        const px = playerRef.current.x; const py = playerRef.current.y;
 
         if (gameState.currentScene === 'town') {
+          // Ligar PROMPTS dos NPCs
           Object.values(gameState.npcs || {}).forEach(npc => {
             if (!npc) return;
             const walker = storyNPCWalkersRef.current[npc.id];
-            const posX = walker ? walker.currentX : npc.x;
-            const posY = walker ? walker.currentY : npc.y;
+            const posX = walker ? walker.currentX : npc.x; const posY = walker ? walker.currentY : npc.y;
             if (Math.hypot(px - posX, py - posY) < 2.2 && !foundPrompt) {
               const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
               foundPrompt = {
-                text: `[E] Talk with ${npc.name} (${walker?.isWalking ? `Commuting to ${walker.currentSlot?.locationName || 'Station'}` : (walker?.currentSlot?.activity || npc.role)})`,
+                text: `[E] Talk with ${npc.name}`,
                 action: () => pProps.onInteractNPC({ ...npc, locationName: walker?.currentSlot?.locationName || npc.locationName, currentActivity: walker?.currentSlot?.activity, x: posX, y: posY }),
                 x: s.x, y: s.y - 50,
               };
             }
           });
 
+          // Ligar PROMPTS Dinâmicos Gerados pela Cidade (Lojas, Arcades, Metro, etc.)
           if (!foundPrompt) {
-            const storefronts = [
-              { x: 10, y: 7, label: "Entrar: Bistrô de Ramen do Chef Bao", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ramen_bistro'); } },
-              { x: 4, y: 15, label: 'Entrar: Clínica Ripperdoc do Dex', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ripperdoc_clinic'); } },
-              { x: 40, y: 14, label: "Entrar: Oficina de Drones da Sparks", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('robotics_garage'); } },
-              { x: 14, y: 6, label: 'Entrar: Santuário Netrunner da Nyx', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('netrunner_den'); } },
-              { x: 38, y: 35, label: 'Entrar: Boutique de Luxo do Vane', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('haute_boutique'); } },
-              { x: 4, y: 8, label: 'Glitch & Grind Bazaar (Móveis)', action: () => pProps.onOpenStoreTab?.('furniture') },
-              { x: 10, y: 14, label: 'The Black Ice Arcade (-10⚡)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Arcade Game')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } pProps.onInteractArcade(); } },
-              { x: 16, y: 6, label: 'Apex Real Estate (Imóveis)', action: () => pProps.onOpenStoreTab?.('realty') },
-              { x: 16, y: 14, label: 'Colheita Flora-Synth (-10⚡, +45 CR)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Colheita Hidropônica')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } sound.playCredit(); addFloatingText('+45 CR', '#10b981'); pProps.onActionReward(45, 20, 'Colheita em Estufa'); } },
-              { x: 35, y: 29, label: 'Neo-Metro Rapid Transit (+30⚡, +Exp)', action: () => { sound.playNewsBroadcast(); addFloatingText('TRANSIT PASS // +30 ENERGIA', '#00f0ff'); pProps.onActionReward(30, 25, 'Rode Neo-Metro'); } },
-              { x: 33, y: 38, label: 'Meditar na Fonte Quântica (+25⚡)', action: () => { sound.playRest(); addFloatingText('+25 Energia', '#c084fc'); pProps.onActionReward(25, 20, 'Refletiu na Fonte Cívica'); } },
-            ];
-            for (const store of storefronts) {
-              if (Math.hypot(px - store.x, py - store.y) < 2.2) {
-                const s = isoToScreen(store.x, store.y, cameraRef.current, canvas.width, canvas.height);
-                foundPrompt = { text: `[E] ${store.label}`, action: store.action, x: s.x, y: s.y - 45 };
-                break;
+            cityMap.interactables.forEach(int => {
+              if (Math.hypot(px - int.x, py - int.y) < 2.2 && !foundPrompt) {
+                const s = isoToScreen(int.x, int.y, cameraRef.current, canvas.width, canvas.height);
+                foundPrompt = {
+                  text: `[E] ${int.label}`,
+                  action: () => {
+                    sound.playChirp(1.1);
+                    if (['ramen_bistro', 'ripperdoc_clinic', 'robotics_garage', 'netrunner_den', 'haute_boutique'].includes(int.id)) { pProps.onEnterInterior?.(int.id); }
+                    else if (int.id === 'furniture' || int.id === 'realty') { pProps.onOpenStoreTab?.(int.id as any); }
+                    else if (int.id === 'arcade') { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Arcade Game')) return addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); pProps.onInteractArcade(); }
+                    else if (int.id === 'greenhouse') { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Colheita')) return addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); pProps.onActionReward(45, 20, 'Colheita em Estufa'); }
+                    else if (int.id === 'metro') { sound.playNewsBroadcast(); addFloatingText('+30 ENERGIA', '#00f0ff'); pProps.onActionReward(30, 25, 'Metro Ride'); }
+                    else if (int.id === 'fountain') { sound.playRest(); addFloatingText('+25 Energia', '#c084fc'); pProps.onActionReward(25, 20, 'Fountain Meditate'); }
+                    else if (int.id === 'terminal') { pProps.onInteractTerminal(); }
+                    else if (int.id === 'lecture') { sound.playLevelUp(); pProps.onActionReward(50, 25, 'AI Lecture'); }
+                    else if (int.id === 'repair') { pProps.onInteractRepairBot(); }
+                    else if (int.id === 'vending') { pProps.onInteractVendingMachine(); }
+                    else if (int.id === 'academy' || int.id === 'megapod') { pProps.onEnterHouse(pProps.gameState.currentHouseId); }
+                  },
+                  x: s.x, y: s.y - 45
+                };
               }
-            }
+            });
           }
 
+          // Ligar PROMPTS dos Peões
           if (!foundPrompt) {
             for (const cit of citizensRef.current) {
               if (Math.hypot(px - cit.x, py - cit.y) < 1.8) {
@@ -831,48 +948,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
                 break;
               }
             }
-          }
-
-          if (!foundPrompt) {
-            [{ x: 28, y: 7, label: 'Workstation Alpha' }, { x: 28, y: 14, label: 'Workstation Beta' }].forEach(k => {
-              if (Math.hypot(px - k.x, py - k.y) < 1.8) {
-                const s = isoToScreen(k.x, k.y, cameraRef.current, canvas.width, canvas.height);
-                foundPrompt = { text: `[E] Hack ${k.label} (+Credits)`, action: pProps.onInteractTerminal, x: s.x, y: s.y - 40 };
-              }
-            });
-          }
-
-          if (!foundPrompt && currentHouse && Math.hypot(px - 38, py - 7) < 2.5) {
-            const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = { text: `[E] Enter Academy Residence (${currentHouse.name})`, action: () => pProps.onEnterHouse(currentHouse.id), x: s.x, y: s.y - 50 };
-          }
-
-          if (!foundPrompt && Math.hypot(px - 33, py - 13) < 2.2) {
-            const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = { text: '[E] Attend AI Holo-Lecture (+50 CR, +25 Cyber-EXP)', action: () => { sound.playLevelUp(); addFloatingText('+50 CR', '#00f0ff'); pProps.onActionReward(50, 25, 'Attended AI Holo-Lecture'); }, x: s.x, y: s.y - 45 };
-          }
-
-          if (!foundPrompt) {
-            [{ x: 8, y: 11, n: 'Synth-Drink Dispenser', c: 'drink' }, { x: 10, y: 41, n: 'Cyber-Snack Dispenser', c: 'snack' }, { x: 42, y: 39, n: 'Plaza Vending Station', c: 'all' }].forEach(v => {
-              if (Math.hypot(px - v.x, py - v.y) < 2.0) {
-                const s = isoToScreen(v.x, v.y, cameraRef.current, canvas.width, canvas.height);
-                foundPrompt = { text: `[E] Open ${v.n}`, action: () => pProps.onInteractVendingMachine(v.c as any), x: s.x, y: s.y - 35 };
-              }
-            });
-          }
-
-          if (!foundPrompt) {
-            [{ x: 10, y: 10 }, { x: 14, y: 9 }, { x: 28, y: 36 }, { x: 38, y: 40 }].forEach(b => {
-              if (Math.hypot(px - b.x, py - b.y) < 1.8) {
-                const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height);
-                foundPrompt = { text: '[E] Rest on Cyber-Bench (+25 Energy)', action: () => { sound.playRest(); addFloatingText('+25 Energy', '#38bdf8'); pProps.onActionReward(0, 10, 'Rested on Bench'); }, x: s.x, y: s.y - 35 };
-              }
-            });
-          }
-
-          if (!foundPrompt && Math.hypot(px - 40, py - 14) < 1.9) {
-            const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = { text: '[E] Reparar Drone (-15⚡, +60 CR, +30 Eng)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(15, 'Reparo de Drone')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); return; } pProps.onInteractRepairBot(); }, x: s.x, y: s.y - 35 };
           }
         } else if (gameState.currentScene === 'interior') {
           const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
@@ -912,48 +987,37 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           setNearbyPrompt(null);
         }
 
-        const currentFloorX = Math.floor(px);
-        const currentFloorY = Math.floor(py);
+        const currentFloorX = Math.floor(px); const currentFloorY = Math.floor(py);
         if (currentFloorX !== lastFloorCoordsRef.current.x || currentFloorY !== lastFloorCoordsRef.current.y) {
           lastFloorCoordsRef.current = { x: currentFloorX, y: currentFloorY };
           setUiCoords({ x: currentFloorX, y: currentFloorY });
         }
-      } catch (error) {
-        console.error("⛔ CRASH FATAL EVITADO NO GAME LOOP:", error);
-      } finally {
-        animId = requestAnimationFrame(gameLoop);
-      }
+      } catch (error) { console.error("⛔ CRASH FATAL EVITADO:", error); } 
+      finally { animId = requestAnimationFrame(gameLoop); }
     };
 
     animId = requestAnimationFrame(gameLoop);
     return () => cancelAnimationFrame(animId);
-  }, []);
+  }, [cityMap]);
 
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
-      if (canvas && canvas.parentElement) {
-        canvas.width = canvas.parentElement.clientWidth || 800;
-        canvas.height = canvas.parentElement.clientHeight || 600;
-      }
+      if (canvas && canvas.parentElement) { canvas.width = canvas.parentElement.clientWidth || 800; canvas.height = canvas.parentElement.clientHeight || 600; }
     };
-    handleResize();
-    window.addEventListener('resize', handleResize);
+    handleResize(); window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvas = canvasRef.current; if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const iso = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
 
     if (props.isDecorateMode) {
-      const tileX = Math.floor(iso.x);
-      const tileY = Math.floor(iso.y);
-      if (props.selectedCatalogItem) {
-        props.onPlaceFurnitureAt(tileX, tileY);
-      } else {
+      const tileX = Math.floor(iso.x); const tileY = Math.floor(iso.y);
+      if (props.selectedCatalogItem) { props.onPlaceFurnitureAt(tileX, tileY); } 
+      else {
         const currentHouse = props.gameState.houses?.find(h => h.id === props.gameState.currentHouseId) || props.gameState.houses?.[0];
         const clickedItem = currentHouse?.placedFurniture?.find(item => tileX >= item.x && tileX < item.x + 2 && tileY >= item.y && tileY < item.y + 2);
         props.onSelectPlaced(clickedItem ? clickedItem.instanceId : null);
@@ -966,13 +1030,12 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const canvas = canvasRef.current; if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     mouseIsoRef.current = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
   };
 
-  const getCurrentDistrictBadge = () => {
+  const currentDistrict = (() => {
     if (props.gameState?.currentScene === 'interior') {
       const est = NPC_ESTABLISHMENTS[props.gameState.currentInteriorId || 'ramen_bistro'];
       return { badge: 'ESTABELECIMENTO', name: (est?.name || 'INTERIOR').toUpperCase(), color: 'text-pink-400 border-pink-500/40' };
@@ -981,18 +1044,13 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
       const currentHouse = props.gameState?.houses?.find(h => h.id === props.gameState.currentHouseId) || props.gameState?.houses?.[0];
       return { badge: 'RESIDENCE', name: (currentHouse?.name || 'CASA').toUpperCase(), color: 'text-cyan-400 border-cyan-500/40' };
     }
-
     const { x, y } = uiCoords;
-    const isHighway = (x >= 21 && x <= 24) || (y >= 21 && y <= 24);
-
-    if (isHighway) return { badge: 'CENTRAL AXIS', name: 'NEO-HIGHWAY & TRANSIT CORRIDOR', color: 'text-amber-400 border-amber-500/40' };
+    if ((x >= 21 && x <= 24) || (y >= 21 && y <= 24)) return { badge: 'CENTRAL AXIS', name: 'NEO-HIGHWAY CORRIDOR', color: 'text-amber-400 border-amber-500/40' };
     if (x < 21 && y < 21) return { badge: 'DISTRICT 01', name: 'NEON COMMERCIAL BOULEVARD', color: 'text-cyan-400 border-cyan-500/40' };
     if (x > 24 && y < 21) return { badge: 'DISTRICT 02', name: 'NEO-AKADEMIA CAMPUS & LABS', color: 'text-pink-400 border-pink-500/40' };
     if (x < 21 && y > 24) return { badge: 'DISTRICT 03', name: 'CAPSULE RESIDENTIAL SECTOR', color: 'text-blue-400 border-blue-500/40' };
     return { badge: 'DISTRICT 04', name: 'CIVIC METRO & TRANSIT PLAZA', color: 'text-purple-400 border-purple-500/40' };
-  };
-
-  const currentDistrict = getCurrentDistrictBadge();
+  })();
 
   return (
     <div className="relative w-full h-full overflow-hidden select-none bg-slate-950">
@@ -1017,7 +1075,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) =
           <button onPointerDown={() => keysPressed.current.add('w')} onPointerUp={() => keysPressed.current.delete('w')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▲</button>
         </div>
         <div className="flex gap-2">
-          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keysPressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
+          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keys   Pressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
           <button onPointerDown={() => keysPressed.current.add('s')} onPointerUp={() => keysPressed.current.delete('s')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▼</button>
           <button onPointerDown={() => keysPressed.current.add('d')} onPointerUp={() => keysPressed.current.delete('d')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">►</button>
         </div>
