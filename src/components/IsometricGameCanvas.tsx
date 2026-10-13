@@ -74,8 +74,6 @@ interface IsometricGameCanvasProps {
   onOpenStoreTab?: (tab: 'cosmetics' | 'furniture' | 'realty') => void;
 }
 
-
-// Dynamic Citizen Walker interface for ambient street life
 interface CitizenWalker {
   id: string;
   name: string;
@@ -90,7 +88,6 @@ interface CitizenWalker {
   waypointIndex: number;
 }
 
-// Dynamic Moving Traffic Vehicle
 interface TrafficCar {
   id: string;
   lane: 'avenue_south' | 'avenue_north' | 'boulevard_east' | 'boulevard_west';
@@ -101,7 +98,6 @@ interface TrafficCar {
   dir: TrafficDirection;
 }
 
-// Dynamic Scheduled Story NPC Walker
 interface StoryNPCWalker {
   id: string;
   currentX: number;
@@ -116,64 +112,48 @@ interface StoryNPCWalker {
   statusMessage: string;
 }
 
-export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
-  gameState,
-  isDecorateMode,
-  selectedPlacedId,
-  selectedCatalogItem,
-  onInteractNPC,
-  onInteractTerminal,
-  onInteractArcade,
-  onInteractBed,
-  onInteractPlant,
-  onInteractRepairBot,
-  onEnterHouse,
-  onExitHouse,
-  onEnterInterior,
-  onExitInterior,
-  onConsumeEnergy,
-  onPlaceFurnitureAt,
-  onSelectPlaced,
-  onActionReward,
-  onInteractVendingMachine,
-  onOpenStoreTab,
-}) => {
+export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = (props) => {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  // Metropolis Town Size
+  // 1. REF DE PROPS: Mantém o GameLoop sempre atualizado sem re-renderizar o Canvas
+  const propsRef = useRef(props);
+  useEffect(() => {
+    propsRef.current = props;
+  }, [props]);
+
   const TOWN_SIZE = 46;
 
-  // Player position in isometric coordinates
-  const [playerIso, setPlayerIso] = useState<{ x: number; y: number }>(() => ({
-    x: gameState.currentScene === 'town' ? 10 : 3,
-    y: gameState.currentScene === 'town' ? 10 : 3,
-  }));
-  const [playerDir, setPlayerDir] = useState<'SE' | 'SW' | 'NE' | 'NW'>('SE');
-  const [isMoving, setIsMoving] = useState<boolean>(false);
-  const [floatingTexts, setFloatingTexts] = useState<FloatingText[]>([]);
+  // 2. ESTADO DO JOGO EM REFS: Evita o Virtual DOM
+  const playerRef = useRef({
+    x: props.gameState.currentScene === 'town' ? 10 : 3,
+    y: props.gameState.currentScene === 'town' ? 10 : 3,
+    dir: 'SE' as 'SE' | 'SW' | 'NE' | 'NW',
+    isMoving: false,
+  });
 
-  // Camera tracking
+  const floatingTextsRef = useRef<FloatingText[]>([]);
+  
+  // UI Throttling States
+  const [nearbyPrompt, setNearbyPrompt] = useState<{text: string; action: () => void; x: number; y: number;} | null>(null);
+  const currentPromptRef = useRef<{text: string; action: () => void; x: number; y: number;} | null>(null);
+  const [uiCoords, setUiCoords] = useState({ x: playerRef.current.x, y: playerRef.current.y });
+  const lastFloorCoordsRef = useRef({ x: Math.floor(playerRef.current.x), y: Math.floor(playerRef.current.y) });
+
+  // Camera & Inputs
   const cameraRef = useRef<Camera>({ x: 0, y: 0, zoom: 1 });
   const mouseIsoRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const keysPressed = useRef<Set<string>>(new Set());
 
-  // Weather simulation state: rain ripples, lightning flashes
+  // Physics & Weather
+  const lastTimeRef = useRef<number>(performance.now());
+  const tickRef = useRef<number>(0);
   const ripplesRef = useRef<{ x: number; y: number; progress: number }[]>([]);
   const lightningFlashRef = useRef<number>(0);
   const nextLightningTimeRef = useRef<number>(Date.now() + 3500);
+  const lastStepSoundTimeRef = useRef<number>(0);
 
-  // Active interaction prompt
-  const [nearbyPrompt, setNearbyPrompt] = useState<{
-    text: string;
-    action: () => void;
-    x: number;
-    y: number;
-  } | null>(null);
-
-  // Dynamic Scheduled Story NPCs
   const storyNPCWalkersRef = useRef<Record<string, StoryNPCWalker>>({});
 
-  // Dynamic Moving Traffic Vehicles across Central Avenue & Boulevard
   const trafficVehiclesRef = useRef<TrafficCar[]>([
     { id: 't1', lane: 'avenue_south', x: 21.5, y: 2, speed: 0.11, type: 'taxi', dir: 'SE' },
     { id: 't2', lane: 'avenue_south', x: 21.5, y: 22, speed: 0.14, type: 'speeder', dir: 'SE' },
@@ -185,425 +165,63 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
     { id: 't8', lane: 'boulevard_west', x: 18, y: 23.5, speed: 0.12, type: 'patrol', dir: 'NE' },
   ]);
 
-  // Ambient Citizens walking the streets of Neopolis
   const citizensRef = useRef<CitizenWalker[]>([
-    // Commercial Promenade Walkers
-    {
-      id: 'cit_1',
-      name: 'Cipher',
-      x: 6,
-      y: 9,
-      dir: 'SE',
-      speed: 0.045,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 6, y: 9 },
-        { x: 10, y: 9 },
-        { x: 15, y: 9 },
-        { x: 15, y: 15 },
-        { x: 8, y: 15 },
-      ],
-      appearance: {
-        name: 'Cipher',
-        gender: 'neutral',
-        origin: 'netrunner',
-        skinTone: '#fbcfe8',
-        hairStyle: 'mohawk',
-        hairColor: '#00f0ff',
-        implant: 'visor',
-        implantColor: '#00f0ff',
-        outfitStyle: 'duster',
-        outfitColor: '#1e1b4b',
-        droneCompanion: 'none',
-      },
-      greeting: 'Cipher: "Watch the crosswalks! Those hover-taxis take corners at full throttle."',
-    },
-    {
-      id: 'cit_2',
-      name: 'Kira',
-      x: 10,
-      y: 6,
-      dir: 'SW',
-      speed: 0.04,
-      pauseTicks: 20,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 10, y: 6 },
-        { x: 10, y: 12 },
-        { x: 5, y: 12 },
-        { x: 5, y: 6 },
-      ],
-      appearance: {
-        name: 'Kira',
-        gender: 'fem',
-        origin: 'courier',
-        skinTone: '#fed7aa',
-        hairStyle: 'bob',
-        hairColor: '#ff2a85',
-        implant: 'optic_ring',
-        implantColor: '#ff2a85',
-        outfitStyle: 'bomber',
-        outfitColor: '#f43f5e',
-        droneCompanion: 'none',
-      },
-      greeting: 'Kira: "Bao’s cyber-ramen has real synth-chili oil today. Best fuel in District 1!"',
-    },
-    {
-      id: 'cit_3',
-      name: 'Zero',
-      x: 14,
-      y: 8,
-      dir: 'NE',
-      speed: 0.042,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 14, y: 8 },
-        { x: 17, y: 8 },
-        { x: 17, y: 16 },
-        { x: 12, y: 16 },
-      ],
-      appearance: {
-        name: 'Zero',
-        gender: 'masc',
-        origin: 'mechanic',
-        skinTone: '#e2e8f0',
-        hairStyle: 'spiky',
-        hairColor: '#facc15',
-        implant: 'chrome_jaw',
-        implantColor: '#94a3b8',
-        outfitStyle: 'hoodie',
-        outfitColor: '#0f172a',
-        droneCompanion: 'none',
-      },
-      greeting: 'Zero: "Glitch & Grind got a shipment of quantum cyberdecks this morning."',
-    },
-    // Crosswalk Pedestrians crossing Central Avenue
-    {
-      id: 'cit_4',
-      name: 'Vex',
-      x: 19,
-      y: 19,
-      dir: 'SE',
-      speed: 0.05,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 18, y: 19 },
-        { x: 26, y: 19 }, // Crossing avenue!
-        { x: 28, y: 14 },
-        { x: 26, y: 19 },
-        { x: 18, y: 19 },
-      ],
-      appearance: {
-        name: 'Vex',
-        gender: 'neutral',
-        origin: 'netrunner',
-        skinTone: '#cbd5e1',
-        hairStyle: 'dreads',
-        hairColor: '#a855f7',
-        implant: 'visor',
-        implantColor: '#a855f7',
-        outfitStyle: 'duster',
-        outfitColor: '#090d16',
-        droneCompanion: 'none',
-      },
-      greeting: 'Vex: "Heading across the avenue to the Academy lecture. Late again!"',
-    },
-    {
-      id: 'cit_5',
-      name: 'Aero',
-      x: 26,
-      y: 26,
-      dir: 'NW',
-      speed: 0.048,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 26, y: 26 },
-        { x: 18, y: 26 }, // Crossing boulevard!
-        { x: 14, y: 32 },
-        { x: 18, y: 26 },
-        { x: 26, y: 26 },
-      ],
-      appearance: {
-        name: 'Aero',
-        gender: 'masc',
-        origin: 'courier',
-        skinTone: '#fed7aa',
-        hairStyle: 'slick',
-        hairColor: '#38bdf8',
-        implant: 'neural_jack',
-        implantColor: '#38bdf8',
-        outfitStyle: 'bomber',
-        outfitColor: '#0284c7',
-        droneCompanion: 'none',
-      },
-      greeting: 'Aero: "Courier delivery run to the Capsule Towers. 5 minutes on the clock!"',
-    },
-    // Neo-Akademia Campus Students
-    {
-      id: 'cit_6',
-      name: 'Lyra',
-      x: 30,
-      y: 10,
-      dir: 'SE',
-      speed: 0.038,
-      pauseTicks: 30,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 30, y: 10 },
-        { x: 35, y: 10 },
-        { x: 35, y: 16 },
-        { x: 30, y: 16 },
-      ],
-      appearance: {
-        name: 'Lyra',
-        gender: 'fem',
-        origin: 'alchemist',
-        skinTone: '#fbcfe8',
-        hairStyle: 'pixie',
-        hairColor: '#10b981',
-        implant: 'optic_ring',
-        implantColor: '#10b981',
-        outfitStyle: 'biosuit',
-        outfitColor: '#064e3b',
-        droneCompanion: 'none',
-      },
-      greeting: 'Lyra: "The synth-flora spores near the campus quad have high biocell density today."',
-    },
-    {
-      id: 'cit_7',
-      name: 'Shin',
-      x: 36,
-      y: 14,
-      dir: 'NE',
-      speed: 0.04,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 36, y: 14 },
-        { x: 42, y: 14 },
-        { x: 42, y: 8 },
-        { x: 36, y: 8 },
-      ],
-      appearance: {
-        name: 'Shin',
-        gender: 'masc',
-        origin: 'mechanic',
-        skinTone: '#fcd34d',
-        hairStyle: 'spiky',
-        hairColor: '#f97316',
-        implant: 'cyber_tattoo',
-        implantColor: '#f97316',
-        outfitStyle: 'hoodie',
-        outfitColor: '#7c2d12',
-        droneCompanion: 'none',
-      },
-      greeting: 'Shin: "The maintenance drones keep getting ionized by the acid rain."',
-    },
-    // Capsule Residential District Citizens
-    {
-      id: 'cit_8',
-      name: 'Rook',
-      x: 8,
-      y: 33,
-      dir: 'SE',
-      speed: 0.042,
-      pauseTicks: 15,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 8, y: 33 },
-        { x: 15, y: 33 },
-        { x: 15, y: 40 },
-        { x: 8, y: 40 },
-      ],
-      appearance: {
-        name: 'Rook',
-        gender: 'masc',
-        origin: 'mechanic',
-        skinTone: '#94a3b8',
-        hairStyle: 'mohawk',
-        hairColor: '#ef4444',
-        implant: 'chrome_jaw',
-        implantColor: '#ef4444',
-        outfitStyle: 'bomber',
-        outfitColor: '#18181b',
-        droneCompanion: 'none',
-      },
-      greeting: 'Rook: "Capsule Pod 404 is a tight squeeze, but nothing beats that rooftop rain sound."',
-    },
-    {
-      id: 'cit_9',
-      name: 'Maya',
-      x: 12,
-      y: 36,
-      dir: 'SW',
-      speed: 0.039,
-      pauseTicks: 25,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 12, y: 36 },
-        { x: 6, y: 36 },
-        { x: 6, y: 42 },
-        { x: 12, y: 42 },
-      ],
-      appearance: {
-        name: 'Maya',
-        gender: 'fem',
-        origin: 'netrunner',
-        skinTone: '#fed7aa',
-        hairStyle: 'bob',
-        hairColor: '#c084fc',
-        implant: 'visor',
-        implantColor: '#c084fc',
-        outfitStyle: 'duster',
-        outfitColor: '#312e81',
-        droneCompanion: 'none',
-      },
-      greeting: 'Maya: "The skybridge between blocks has an incredible view of the neon highway below."',
-    },
-    // Civic Metro Plaza Commuters
-    {
-      id: 'cit_10',
-      name: 'Tate',
-      x: 32,
-      y: 33,
-      dir: 'SE',
-      speed: 0.046,
-      pauseTicks: 0,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 32, y: 33 },
-        { x: 38, y: 33 },
-        { x: 38, y: 39 },
-        { x: 32, y: 39 },
-      ],
-      appearance: {
-        name: 'Tate',
-        gender: 'neutral',
-        origin: 'courier',
-        skinTone: '#fbcfe8',
-        hairStyle: 'slick',
-        hairColor: '#00f0ff',
-        implant: 'optic_ring',
-        implantColor: '#00f0ff',
-        outfitStyle: 'duster',
-        outfitColor: '#0f172a',
-        droneCompanion: 'none',
-      },
-      greeting: 'Tate: "Next train on Line 01 arrives in 2 minutes. Neopolis transit never sleeps."',
-    },
-    {
-      id: 'cit_11',
-      name: 'Orion',
-      x: 35,
-      y: 37,
-      dir: 'NE',
-      speed: 0.035,
-      pauseTicks: 40,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 35, y: 37 },
-        { x: 41, y: 37 },
-        { x: 41, y: 43 },
-        { x: 35, y: 43 },
-      ],
-      appearance: {
-        name: 'Orion',
-        gender: 'masc',
-        origin: 'alchemist',
-        skinTone: '#e2e8f0',
-        hairStyle: 'dreads',
-        hairColor: '#22c55e',
-        implant: 'neural_jack',
-        implantColor: '#22c55e',
-        outfitStyle: 'biosuit',
-        outfitColor: '#064e3b',
-        droneCompanion: 'none',
-      },
-      greeting: 'Orion: "The holographic light fountain is charged by the city’s quantum grid. Mesmerizing."',
-    },
-    {
-      id: 'cit_12',
-      name: 'Echo',
-      x: 40,
-      y: 34,
-      dir: 'SW',
-      speed: 0.041,
-      pauseTicks: 10,
-      waypointIndex: 0,
-      waypoints: [
-        { x: 40, y: 34 },
-        { x: 33, y: 34 },
-        { x: 33, y: 42 },
-        { x: 40, y: 42 },
-      ],
-      appearance: {
-        name: 'Echo',
-        gender: 'fem',
-        origin: 'netrunner',
-        skinTone: '#cbd5e1',
-        hairStyle: 'pixie',
-        hairColor: '#f43f5e',
-        implant: 'visor',
-        implantColor: '#f43f5e',
-        outfitStyle: 'bomber',
-        outfitColor: '#881337',
-        droneCompanion: 'none',
-      },
-      greeting: 'Echo: "Check the giant holo-billboard across the plaza—they’re running Arasaka stock updates."',
-    },
+    { id: 'cit_1', name: 'Cipher', x: 6, y: 9, dir: 'SE', speed: 0.045, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 6, y: 9 }, { x: 10, y: 9 }, { x: 15, y: 9 }, { x: 15, y: 15 }, { x: 8, y: 15 }], appearance: { name: 'Cipher', gender: 'neutral', origin: 'netrunner', skinTone: '#fbcfe8', hairStyle: 'mohawk', hairColor: '#00f0ff', implant: 'visor', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#1e1b4b', droneCompanion: 'none' }, greeting: 'Cipher: "Watch the crosswalks! Those hover-taxis take corners at full throttle."' },
+    { id: 'cit_2', name: 'Kira', x: 10, y: 6, dir: 'SW', speed: 0.04, pauseTicks: 20, waypointIndex: 0, waypoints: [{ x: 10, y: 6 }, { x: 10, y: 12 }, { x: 5, y: 12 }, { x: 5, y: 6 }], appearance: { name: 'Kira', gender: 'fem', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#ff2a85', implant: 'optic_ring', implantColor: '#ff2a85', outfitStyle: 'bomber', outfitColor: '#f43f5e', droneCompanion: 'none' }, greeting: 'Kira: "Bao’s cyber-ramen has real synth-chili oil today. Best fuel in District 1!"' },
+    { id: 'cit_3', name: 'Zero', x: 14, y: 8, dir: 'NE', speed: 0.042, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 14, y: 8 }, { x: 17, y: 8 }, { x: 17, y: 16 }, { x: 12, y: 16 }], appearance: { name: 'Zero', gender: 'masc', origin: 'mechanic', skinTone: '#e2e8f0', hairStyle: 'spiky', hairColor: '#facc15', implant: 'chrome_jaw', implantColor: '#94a3b8', outfitStyle: 'hoodie', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Zero: "Glitch & Grind got a shipment of quantum cyberdecks this morning."' },
+    { id: 'cit_4', name: 'Vex', x: 19, y: 19, dir: 'SE', speed: 0.05, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 18, y: 19 }, { x: 26, y: 19 }, { x: 28, y: 14 }, { x: 26, y: 19 }, { x: 18, y: 19 }], appearance: { name: 'Vex', gender: 'neutral', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'dreads', hairColor: '#a855f7', implant: 'visor', implantColor: '#a855f7', outfitStyle: 'duster', outfitColor: '#090d16', droneCompanion: 'none' }, greeting: 'Vex: "Heading across the avenue to the Academy lecture. Late again!"' },
+    { id: 'cit_5', name: 'Aero', x: 26, y: 26, dir: 'NW', speed: 0.048, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 26, y: 26 }, { x: 18, y: 26 }, { x: 14, y: 32 }, { x: 18, y: 26 }, { x: 26, y: 26 }], appearance: { name: 'Aero', gender: 'masc', origin: 'courier', skinTone: '#fed7aa', hairStyle: 'slick', hairColor: '#38bdf8', implant: 'neural_jack', implantColor: '#38bdf8', outfitStyle: 'bomber', outfitColor: '#0284c7', droneCompanion: 'none' }, greeting: 'Aero: "Courier delivery run to the Capsule Towers. 5 minutes on the clock!"' },
+    { id: 'cit_6', name: 'Lyra', x: 30, y: 10, dir: 'SE', speed: 0.038, pauseTicks: 30, waypointIndex: 0, waypoints: [{ x: 30, y: 10 }, { x: 35, y: 10 }, { x: 35, y: 16 }, { x: 30, y: 16 }], appearance: { name: 'Lyra', gender: 'fem', origin: 'alchemist', skinTone: '#fbcfe8', hairStyle: 'pixie', hairColor: '#10b981', implant: 'optic_ring', implantColor: '#10b981', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Lyra: "The synth-flora spores near the campus quad have high biocell density today."' },
+    { id: 'cit_7', name: 'Shin', x: 36, y: 14, dir: 'NE', speed: 0.04, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 36, y: 14 }, { x: 42, y: 14 }, { x: 42, y: 8 }, { x: 36, y: 8 }], appearance: { name: 'Shin', gender: 'masc', origin: 'mechanic', skinTone: '#fcd34d', hairStyle: 'spiky', hairColor: '#f97316', implant: 'cyber_tattoo', implantColor: '#f97316', outfitStyle: 'hoodie', outfitColor: '#7c2d12', droneCompanion: 'none' }, greeting: 'Shin: "The maintenance drones keep getting ionized by the acid rain."' },
+    { id: 'cit_8', name: 'Rook', x: 8, y: 33, dir: 'SE', speed: 0.042, pauseTicks: 15, waypointIndex: 0, waypoints: [{ x: 8, y: 33 }, { x: 15, y: 33 }, { x: 15, y: 40 }, { x: 8, y: 40 }], appearance: { name: 'Rook', gender: 'masc', origin: 'mechanic', skinTone: '#94a3b8', hairStyle: 'mohawk', hairColor: '#ef4444', implant: 'chrome_jaw', implantColor: '#ef4444', outfitStyle: 'bomber', outfitColor: '#18181b', droneCompanion: 'none' }, greeting: 'Rook: "Capsule Pod 404 is a tight squeeze, but nothing beats that rooftop rain sound."' },
+    { id: 'cit_9', name: 'Maya', x: 12, y: 36, dir: 'SW', speed: 0.039, pauseTicks: 25, waypointIndex: 0, waypoints: [{ x: 12, y: 36 }, { x: 6, y: 36 }, { x: 6, y: 42 }, { x: 12, y: 42 }], appearance: { name: 'Maya', gender: 'fem', origin: 'netrunner', skinTone: '#fed7aa', hairStyle: 'bob', hairColor: '#c084fc', implant: 'visor', implantColor: '#c084fc', outfitStyle: 'duster', outfitColor: '#312e81', droneCompanion: 'none' }, greeting: 'Maya: "The skybridge between blocks has an incredible view of the neon highway below."' },
+    { id: 'cit_10', name: 'Tate', x: 32, y: 33, dir: 'SE', speed: 0.046, pauseTicks: 0, waypointIndex: 0, waypoints: [{ x: 32, y: 33 }, { x: 38, y: 33 }, { x: 38, y: 39 }, { x: 32, y: 39 }], appearance: { name: 'Tate', gender: 'neutral', origin: 'courier', skinTone: '#fbcfe8', hairStyle: 'slick', hairColor: '#00f0ff', implant: 'optic_ring', implantColor: '#00f0ff', outfitStyle: 'duster', outfitColor: '#0f172a', droneCompanion: 'none' }, greeting: 'Tate: "Next train on Line 01 arrives in 2 minutes. Neopolis transit never sleeps."' },
+    { id: 'cit_11', name: 'Orion', x: 35, y: 37, dir: 'NE', speed: 0.035, pauseTicks: 40, waypointIndex: 0, waypoints: [{ x: 35, y: 37 }, { x: 41, y: 37 }, { x: 41, y: 43 }, { x: 35, y: 43 }], appearance: { name: 'Orion', gender: 'masc', origin: 'alchemist', skinTone: '#e2e8f0', hairStyle: 'dreads', hairColor: '#22c55e', implant: 'neural_jack', implantColor: '#22c55e', outfitStyle: 'biosuit', outfitColor: '#064e3b', droneCompanion: 'none' }, greeting: 'Orion: "The holographic light fountain is charged by the city’s quantum grid. Mesmerizing."' },
+    { id: 'cit_12', name: 'Echo', x: 40, y: 34, dir: 'SW', speed: 0.041, pauseTicks: 10, waypointIndex: 0, waypoints: [{ x: 40, y: 34 }, { x: 33, y: 34 }, { x: 33, y: 42 }, { x: 40, y: 42 }], appearance: { name: 'Echo', gender: 'fem', origin: 'netrunner', skinTone: '#cbd5e1', hairStyle: 'pixie', hairColor: '#f43f5e', implant: 'visor', implantColor: '#f43f5e', outfitStyle: 'bomber', outfitColor: '#881337', droneCompanion: 'none' }, greeting: 'Echo: "Check the giant holo-billboard across the plaza—they’re running Arasaka stock updates."' },
   ]);
 
-  // Current house property
-  const currentHouse = gameState.houses.find(h => h.id === gameState.currentHouseId) || gameState.houses[0];
-
-  // Helper for floating text
   const addFloatingText = useCallback((text: string, color = '#38bdf8') => {
-    const id = Math.random().toString();
-    setFloatingTexts(prev => [
-      ...prev,
-      {
-        id,
-        text,
-        x: playerIso.x,
-        y: playerIso.y,
-        color,
-        createdAt: Date.now(),
-      },
-    ]);
-  }, [playerIso.x, playerIso.y]);
+    floatingTextsRef.current.push({
+      id: Math.random().toString(),
+      text,
+      x: playerRef.current.x,
+      y: playerRef.current.y,
+      color,
+      createdAt: Date.now(),
+    });
+  }, []);
 
-  // Handle scene change reset position
+  // Handle scene change reset position (Bypass React State)
   useEffect(() => {
+    const { gameState } = propsRef.current;
     if (gameState.currentScene === 'town') {
       if (gameState.currentInteriorId && NPC_ESTABLISHMENTS[gameState.currentInteriorId]) {
         const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId];
-        setPlayerIso({ x: est.exteriorEntrance.x, y: est.exteriorEntrance.y + 1 });
+        playerRef.current.x = est.exteriorEntrance.x;
+        playerRef.current.y = est.exteriorEntrance.y + 1;
       } else {
-        setPlayerIso({ x: 10, y: 10 });
+        playerRef.current.x = 10;
+        playerRef.current.y = 10;
       }
     } else if (gameState.currentScene === 'interior') {
-      setPlayerIso({ x: 2, y: 2 });
+      playerRef.current.x = 2;
+      playerRef.current.y = 2;
     } else {
-      setPlayerIso({ x: 2, y: 2 });
+      playerRef.current.x = 2;
+      playerRef.current.y = 2;
     }
-  }, [gameState.currentScene, gameState.currentInteriorId]);
-
+  }, [props.gameState.currentScene, props.gameState.currentInteriorId]);
 
   // Keyboard input handler
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) return;
-
       keysPressed.current.add(e.key.toLowerCase());
 
       if (e.key === 'e' || e.key === 'E' || e.key === ' ') {
-        if (nearbyPrompt) {
+        if (currentPromptRef.current) {
           e.preventDefault();
-          nearbyPrompt.action();
+          currentPromptRef.current.action();
         }
       }
     };
@@ -614,43 +232,42 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
-
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
     };
-  }, [nearbyPrompt]);
+  }, []);
 
-  // Main Animation & Physics Loop
+  // 3. MAIN ANIMATION LOOP (Zero Dependencies)
   useEffect(() => {
     let animId: number;
-    let tick = 0;
-    let lastStepSoundTime = 0;
-
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const gameLoop = () => {
-      tick += 0.035;
-
-      // Clean up floating texts older than 1.8s
+    const gameLoop = (time: number) => {
+      const dt = (time - lastTimeRef.current) / 1000;
+      lastTimeRef.current = time;
+      
+      const timeScale = dt * 60; // Normalize to 60fps equivalent for original physics
+      tickRef.current += 0.035 * timeScale;
+      const tick = tickRef.current;
       const now = Date.now();
-      setFloatingTexts(prev => prev.filter(t => now - t.createdAt < 1800));
+
+      const pProps = propsRef.current;
+      const { gameState } = pProps;
+      const currentHouse = gameState.houses.find(h => h.id === gameState.currentHouseId) || gameState.houses[0];
+
+      // Cleanup floating texts
+      floatingTextsRef.current = floatingTextsRef.current.filter(t => now - t.createdAt < 1800);
 
       // Weather Particle & Physics Simulation
       if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
-        if (Math.random() < (gameState.weather === 'glitch_storm' ? 0.35 : 0.2)) {
-          ripplesRef.current.push({
-            x: Math.random() * canvas.width,
-            y: Math.random() * canvas.height,
-            progress: 0,
-          });
+        if (Math.random() < (gameState.weather === 'glitch_storm' ? 0.35 : 0.2) * timeScale) {
+          ripplesRef.current.push({ x: Math.random() * canvas.width, y: Math.random() * canvas.height, progress: 0 });
         }
-        ripplesRef.current.forEach(r => {
-          r.progress += 0.045;
-        });
+        ripplesRef.current.forEach(r => { r.progress += 0.045 * timeScale; });
         ripplesRef.current = ripplesRef.current.filter(r => r.progress < 1.0);
       } else {
         ripplesRef.current = [];
@@ -662,7 +279,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           lightningFlashRef.current = 1.0;
           nextLightningTimeRef.current = now + 3500 + Math.random() * 4500;
         } else {
-          lightningFlashRef.current = Math.max(0, lightningFlashRef.current - 0.07);
+          lightningFlashRef.current = Math.max(0, lightningFlashRef.current - 0.07 * timeScale);
         }
       } else {
         lightningFlashRef.current = 0;
@@ -671,70 +288,57 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
       // 1. Process Player Movement
       let dx = 0;
       let dy = 0;
-      const speed = 0.085;
+      const speed = 0.085 * timeScale;
 
-      if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) {
-        dx -= speed;
-        dy -= speed;
-      }
-      if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) {
-        dx += speed;
-        dy += speed;
-      }
-      if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) {
-        dx -= speed;
-        dy += speed;
-      }
-      if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) {
-        dx += speed;
-        dy -= speed;
-      }
+      if (keysPressed.current.has('w') || keysPressed.current.has('arrowup')) { dx -= speed; dy -= speed; }
+      if (keysPressed.current.has('s') || keysPressed.current.has('arrowdown')) { dx += speed; dy += speed; }
+      if (keysPressed.current.has('a') || keysPressed.current.has('arrowleft')) { dx -= speed; dy += speed; }
+      if (keysPressed.current.has('d') || keysPressed.current.has('arrowright')) { dx += speed; dy -= speed; }
 
       const isWalking = dx !== 0 || dy !== 0;
-      setIsMoving(isWalking);
+      playerRef.current.isMoving = isWalking;
 
       if (isWalking) {
-        if (now - lastStepSoundTime > 320) {
+        if (now - lastStepSoundTimeRef.current > 320) {
           sound.playStep();
-          lastStepSoundTime = now;
+          lastStepSoundTimeRef.current = now;
         }
 
-        if (dx > 0 && dy >= 0) setPlayerDir('SE');
-        else if (dx < 0 && dy <= 0) setPlayerDir('NW');
-        else if (dy > 0 && dx <= 0) setPlayerDir('SW');
-        else if (dy < 0 && dx >= 0) setPlayerDir('NE');
+        if (dx > 0 && dy >= 0) playerRef.current.dir = 'SE';
+        else if (dx < 0 && dy <= 0) playerRef.current.dir = 'NW';
+        else if (dy > 0 && dx <= 0) playerRef.current.dir = 'SW';
+        else if (dy < 0 && dx >= 0) playerRef.current.dir = 'NE';
 
-        setPlayerIso(prev => {
-          let nextX = prev.x + dx;
-          let nextY = prev.y + dy;
+        let nextX = playerRef.current.x + dx;
+        let nextY = playerRef.current.y + dy;
 
-          // Boundaries
-          if (gameState.currentScene === 'town') {
-            nextX = Math.max(1, Math.min(TOWN_SIZE - 2, nextX));
-            nextY = Math.max(1, Math.min(TOWN_SIZE - 2, nextY));
-          } else if (gameState.currentScene === 'interior') {
-            const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
-            const maxW = est ? est.interiorSize.width : 8;
-            const maxH = est ? est.interiorSize.height : 8;
-            nextX = Math.max(0.5, Math.min(maxW - 0.8, nextX));
-            nextY = Math.max(0.5, Math.min(maxH - 0.8, nextY));
-          } else {
-            nextX = Math.max(0.5, Math.min(currentHouse.gridWidth - 0.8, nextX));
-            nextY = Math.max(0.5, Math.min(currentHouse.gridHeight - 0.8, nextY));
-          }
+        // Boundaries
+        if (gameState.currentScene === 'town') {
+          nextX = Math.max(1, Math.min(TOWN_SIZE - 2, nextX));
+          nextY = Math.max(1, Math.min(TOWN_SIZE - 2, nextY));
+        } else if (gameState.currentScene === 'interior') {
+          const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
+          const maxW = est ? est.interiorSize.width : 8;
+          const maxH = est ? est.interiorSize.height : 8;
+          nextX = Math.max(0.5, Math.min(maxW - 0.8, nextX));
+          nextY = Math.max(0.5, Math.min(maxH - 0.8, nextY));
+        } else {
+          nextX = Math.max(0.5, Math.min(currentHouse.gridWidth - 0.8, nextX));
+          nextY = Math.max(0.5, Math.min(currentHouse.gridHeight - 0.8, nextY));
+        }
 
-
-          return { x: nextX, y: nextY };
-        });
+        playerRef.current.x = nextX;
+        playerRef.current.y = nextY;
       }
 
       // 2. Smooth Camera tracking towards player
       const playerScreen = {
-        x: (playerIso.x - playerIso.y) * (TILE_WIDTH / 2),
-        y: (playerIso.x + playerIso.y) * (TILE_HEIGHT / 2),
+        x: (playerRef.current.x - playerRef.current.y) * (TILE_WIDTH / 2),
+        y: (playerRef.current.x + playerRef.current.y) * (TILE_HEIGHT / 2),
       };
-      cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * 0.1;
-      cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * 0.1;
+      // Camera smoothing depends on timeScale too
+      cameraRef.current.x += (playerScreen.x - cameraRef.current.x) * (0.1 * timeScale);
+      cameraRef.current.y += (playerScreen.y - cameraRef.current.y) * (0.1 * timeScale);
 
       // 3. Clear Canvas & Atmospheric Sky Background
       ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -745,7 +349,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
       ctx.fillStyle = skyGrad;
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Distant Spire Beacons & Stars in clear weather
       if (gameState.weather === 'cyber_clear') {
         ctx.fillStyle = '#ffffff';
         for (let i = 0; i < 40; i++) {
@@ -759,14 +362,9 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
       }
 
       // 4. Update Dynamic Traffic Vehicles & Pedestrians with Semaphore System
+      let trafficState: TrafficLightState = 'avenue_green';
       if (gameState.currentScene === 'town') {
-        // Central Semaphore Traffic Light Cycle (16-second loop)
-        // 0..6s: Avenue Green / Boulevard Red (Boulevard Pedestrians Walk)
-        // 6..8s: Avenue Yellow / Boulevard Red
-        // 8..14s: Boulevard Green / Avenue Red (Avenue Pedestrians Walk)
-        // 14..16s: Boulevard Yellow / Avenue Red
         const trafficSec = (Date.now() / 1000) % 16;
-        let trafficState: TrafficLightState = 'avenue_green';
         if (trafficSec < 6) trafficState = 'avenue_green';
         else if (trafficSec < 8) trafficState = 'avenue_yellow';
         else if (trafficSec < 14) trafficState = 'boulevard_green';
@@ -775,114 +373,76 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
         const isAvenueOpen = trafficState === 'avenue_green';
         const isBoulevardOpen = trafficState === 'boulevard_green';
 
-        // Update Moving Traffic with Semaphore Lights & Distance Following
         trafficVehiclesRef.current.forEach(veh => {
           let shouldStop = false;
+          const adjustedSpeed = veh.speed * timeScale;
 
           if (veh.lane === 'avenue_south') {
-            // Stop line before intersection at y = 20
-            if (!isAvenueOpen && veh.y >= 17.5 && veh.y <= 20.2) {
-              shouldStop = true;
-            }
-            // Check car ahead in same lane
-            const ahead = trafficVehiclesRef.current.find(
-              other => other.id !== veh.id && other.lane === 'avenue_south' && other.y > veh.y && other.y - veh.y < 4.0
-            );
+            if (!isAvenueOpen && veh.y >= 17.5 && veh.y <= 20.2) shouldStop = true;
+            const ahead = trafficVehiclesRef.current.find(other => other.id !== veh.id && other.lane === 'avenue_south' && other.y > veh.y && other.y - veh.y < 4.0);
             if (ahead) shouldStop = true;
-
             if (!shouldStop) {
-              veh.y += veh.speed;
+              veh.y += adjustedSpeed;
               if (veh.y > TOWN_SIZE + 2) veh.y = -2;
             }
           } else if (veh.lane === 'avenue_north') {
-            // Stop line before intersection at y = 25
-            if (!isAvenueOpen && veh.y <= 27.5 && veh.y >= 24.8) {
-              shouldStop = true;
-            }
-            const ahead = trafficVehiclesRef.current.find(
-              other => other.id !== veh.id && other.lane === 'avenue_north' && other.y < veh.y && veh.y - other.y < 4.0
-            );
+            if (!isAvenueOpen && veh.y <= 27.5 && veh.y >= 24.8) shouldStop = true;
+            const ahead = trafficVehiclesRef.current.find(other => other.id !== veh.id && other.lane === 'avenue_north' && other.y < veh.y && veh.y - other.y < 4.0);
             if (ahead) shouldStop = true;
-
             if (!shouldStop) {
-              veh.y -= veh.speed;
+              veh.y -= adjustedSpeed;
               if (veh.y < -2) veh.y = TOWN_SIZE + 2;
             }
           } else if (veh.lane === 'boulevard_east') {
-            // Stop line before intersection at x = 20
-            if (!isBoulevardOpen && veh.x >= 17.5 && veh.x <= 20.2) {
-              shouldStop = true;
-            }
-            const ahead = trafficVehiclesRef.current.find(
-              other => other.id !== veh.id && other.lane === 'boulevard_east' && other.x > veh.x && other.x - veh.x < 4.0
-            );
+            if (!isBoulevardOpen && veh.x >= 17.5 && veh.x <= 20.2) shouldStop = true;
+            const ahead = trafficVehiclesRef.current.find(other => other.id !== veh.id && other.lane === 'boulevard_east' && other.x > veh.x && other.x - veh.x < 4.0);
             if (ahead) shouldStop = true;
-
             if (!shouldStop) {
-              veh.x += veh.speed;
+              veh.x += adjustedSpeed;
               if (veh.x > TOWN_SIZE + 2) veh.x = -2;
             }
           } else if (veh.lane === 'boulevard_west') {
-            // Stop line before intersection at x = 25
-            if (!isBoulevardOpen && veh.x <= 27.5 && veh.x >= 24.8) {
-              shouldStop = true;
-            }
-            const ahead = trafficVehiclesRef.current.find(
-              other => other.id !== veh.id && other.lane === 'boulevard_west' && other.x < veh.x && veh.x - other.x < 4.0
-            );
+            if (!isBoulevardOpen && veh.x <= 27.5 && veh.x >= 24.8) shouldStop = true;
+            const ahead = trafficVehiclesRef.current.find(other => other.id !== veh.id && other.lane === 'boulevard_west' && other.x < veh.x && veh.x - other.x < 4.0);
             if (ahead) shouldStop = true;
-
             if (!shouldStop) {
-              veh.x -= veh.speed;
+              veh.x -= adjustedSpeed;
               if (veh.x < -2) veh.x = TOWN_SIZE + 2;
             }
           }
         });
 
-        // Update Walking Citizens with Crosswalk Obedience
         citizensRef.current.forEach(cit => {
           if (cit.pauseTicks > 0) {
-            cit.pauseTicks--;
+            cit.pauseTicks -= timeScale;
             return;
           }
 
           const target = cit.waypoints[cit.waypointIndex];
           const dist = Math.hypot(target.x - cit.x, target.y - cit.y);
 
-          // Check if citizen is about to step onto Avenue crosswalk while Avenue cars have green light
-          const wantsToCrossAvenue =
-            ((cit.x <= 20.8 && target.x > 20.8) || (cit.x >= 24.2 && target.x < 24.2)) &&
-            ((cit.y >= 18.5 && cit.y <= 21) || (cit.y >= 24.5 && cit.y <= 27));
-
+          const wantsToCrossAvenue = ((cit.x <= 20.8 && target.x > 20.8) || (cit.x >= 24.2 && target.x < 24.2)) && ((cit.y >= 18.5 && cit.y <= 21) || (cit.y >= 24.5 && cit.y <= 27));
           if (wantsToCrossAvenue && (trafficState === 'avenue_green' || trafficState === 'avenue_yellow')) {
-            // Avenue traffic active -> Pedestrian signal is RED! Wait at sidewalk curb
             cit.pauseTicks = 20;
             return;
           }
 
-          // Check if citizen is about to step onto Boulevard crosswalk while Boulevard cars have green light
-          const wantsToCrossBoulevard =
-            ((cit.y <= 20.8 && target.y > 20.8) || (cit.y >= 24.2 && target.y < 24.2)) &&
-            ((cit.x >= 18.5 && cit.x <= 21) || (cit.x >= 24.5 && cit.x <= 27));
-
+          const wantsToCrossBoulevard = ((cit.y <= 20.8 && target.y > 20.8) || (cit.y >= 24.2 && target.y < 24.2)) && ((cit.x >= 18.5 && cit.x <= 21) || (cit.x >= 24.5 && cit.x <= 27));
           if (wantsToCrossBoulevard && (trafficState === 'boulevard_green' || trafficState === 'boulevard_yellow')) {
-            // Boulevard traffic active -> Pedestrian signal is RED! Wait at sidewalk curb
             cit.pauseTicks = 20;
             return;
           }
 
           if (dist < 0.25) {
-            // Reached target waypoint, advance to next and pause briefly
             cit.waypointIndex = (cit.waypointIndex + 1) % cit.waypoints.length;
             cit.pauseTicks = Math.floor(35 + Math.random() * 45);
           } else {
             const angle = Math.atan2(target.y - cit.y, target.x - cit.x);
-            const cdx = Math.cos(angle) * cit.speed;
-            const cdy = Math.sin(angle) * cit.speed;
+            const cdx = Math.cos(angle) * cit.speed * timeScale;
+            const cdy = Math.sin(angle) * cit.speed * timeScale;
             cit.x += cdx;
             cit.y += cdy;
 
-            // Facing direction
             if (cdx > 0 && cdy >= 0) cit.dir = 'SE';
             else if (cdx < 0 && cdy <= 0) cit.dir = 'NW';
             else if (cdy > 0 && cdx <= 0) cit.dir = 'SW';
@@ -890,8 +450,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           }
         });
 
-
-        // Update Scheduled Story NPCs (Dex, Nyx, Sparks, Vane, Bao)
         Object.values(gameState.npcs).forEach(npc => {
           let walker = storyNPCWalkersRef.current[npc.id];
           const slot = getNPCScheduleForHour(npc, gameState.timeHour);
@@ -899,19 +457,7 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           const targetY = slot ? slot.y : npc.y;
 
           if (!walker) {
-            walker = {
-              id: npc.id,
-              currentX: targetX,
-              currentY: targetY,
-              targetX: targetX,
-              targetY: targetY,
-              dir: 'SE',
-              isWalking: false,
-              speed: 0.045,
-              pauseTicks: 0,
-              currentSlot: slot,
-              statusMessage: slot?.activity || npc.role,
-            };
+            walker = { id: npc.id, currentX: targetX, currentY: targetY, targetX: targetX, targetY: targetY, dir: 'SE', isWalking: false, speed: 0.045, pauseTicks: 0, currentSlot: slot, statusMessage: slot?.activity || npc.role };
             storyNPCWalkersRef.current[npc.id] = walker;
           } else {
             if (walker.targetX !== targetX || walker.targetY !== targetY) {
@@ -921,20 +467,20 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
             }
           }
 
-          const dx = walker.targetX - walker.currentX;
-          const dy = walker.targetY - walker.currentY;
-          const dist = Math.hypot(dx, dy);
+          const cdx = walker.targetX - walker.currentX;
+          const cdy = walker.targetY - walker.currentY;
+          const dist = Math.hypot(cdx, cdy);
 
           if (dist > 0.18) {
             walker.isWalking = true;
-            const step = Math.min(dist, walker.speed);
-            walker.currentX += (dx / dist) * step;
-            walker.currentY += (dy / dist) * step;
+            const step = Math.min(dist, walker.speed * timeScale);
+            walker.currentX += (cdx / dist) * step;
+            walker.currentY += (cdy / dist) * step;
 
-            if (dx > 0 && dy >= 0) walker.dir = 'SE';
-            else if (dx < 0 && dy <= 0) walker.dir = 'NW';
-            else if (dy > 0 && dx <= 0) walker.dir = 'SW';
-            else if (dy < 0 && dx >= 0) walker.dir = 'NE';
+            if (cdx > 0 && cdy >= 0) walker.dir = 'SE';
+            else if (cdx < 0 && cdy <= 0) walker.dir = 'NW';
+            else if (cdy > 0 && cdx <= 0) walker.dir = 'SW';
+            else if (cdy < 0 && cdx >= 0) walker.dir = 'NE';
 
             walker.statusMessage = `Heading to ${slot?.locationName || 'destination'}`;
           } else {
@@ -946,107 +492,55 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
         });
       }
 
-      // 5. Render Ground Tiles (NEOPOLIS METROPOLIS 46x46 EXPANSION)
+      // 5. Render Ground Tiles
       if (gameState.currentScene === 'town') {
         for (let x = 0; x < TOWN_SIZE; x++) {
           for (let y = 0; y < TOWN_SIZE; y++) {
             const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
+            if (screen.x < -64 || screen.x > canvas.width + 64 || screen.y < -64 || screen.y > canvas.height + 64) continue;
 
-            // Viewport tile culling for high performance
-            if (
-              screen.x < -64 ||
-              screen.x > canvas.width + 64 ||
-              screen.y < -64 ||
-              screen.y > canvas.height + 64
-            ) {
-              continue;
-            }
-
-            // Road Network: Central Avenue (x: 21..24) and Cross Boulevard (y: 21..24)
             const isAvenue = x >= 21 && x <= 24;
             const isBoulevard = y >= 21 && y <= 24;
             const isRoad = isAvenue || isBoulevard;
             const isIntersection = isAvenue && isBoulevard;
+            const isCrosswalk = (isAvenue && ((y >= 19 && y <= 20) || (y >= 25 && y <= 26))) || (isBoulevard && ((x >= 19 && x <= 20) || (x >= 25 && x <= 26)));
+            const isCurb = (x === 20 || x === 25 || y === 20 || y === 25) && !isRoad;
 
-            // Pedestrian Crosswalks across the highway
-            const isAvenueCrosswalk = isAvenue && ((y >= 19 && y <= 20) || (y >= 25 && y <= 26));
-            const isBoulevardCrosswalk = isBoulevard && ((x >= 19 && x <= 20) || (x >= 25 && x <= 26));
-            const isCrosswalk = isAvenueCrosswalk || isBoulevardCrosswalk;
-
-            // Curbs separating road from pedestrian sidewalks
-            const isCurb =
-              (x === 20 || x === 25 || y === 20 || y === 25) && !isRoad;
-
-            // District Identification
             const isCommercialDistrict = x < 20 && y < 20;
             const isAkademiaDistrict = x > 25 && y < 20;
             const isCapsuleDistrict = x < 20 && y > 25;
             const isMetroPlazaDistrict = x > 25 && y > 25;
 
-            // Base slate palette adapting to atmosphere
             let fillColor = '#101524';
             let strokeColor = 'rgba(28, 38, 59, 0.45)';
 
-            if (gameState.weather === 'acid_fog') {
-              fillColor = '#0d1611';
-              strokeColor = 'rgba(163, 230, 53, 0.16)';
-            } else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') {
-              fillColor = '#080d1a';
-              strokeColor = 'rgba(0, 240, 255, 0.2)';
-            }
+            if (gameState.weather === 'acid_fog') { fillColor = '#0d1611'; strokeColor = 'rgba(163, 230, 53, 0.16)'; }
+            else if (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') { fillColor = '#080d1a'; strokeColor = 'rgba(0, 240, 255, 0.2)'; }
 
             if (isRoad) {
-              // Textured dark asphalt highway surface
               fillColor = isIntersection ? '#060913' : '#080c18';
               strokeColor = 'rgba(30, 41, 59, 0.35)';
-
               drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
 
-              // Road Markings: Center Lane Dividers (cyan & amber dashes)
               if ((x === 22 || x === 23) && isAvenue && !isCrosswalk && !isIntersection && y % 3 === 0) {
                 drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.35)', '#00f0ff');
               } else if ((y === 22 || y === 23) && isBoulevard && !isCrosswalk && !isIntersection && x % 3 === 0) {
                 drawIsoTile(ctx, screen.x, screen.y, 'rgba(245, 158, 11, 0.35)', '#f59e0b');
               }
-
-              // Pedestrian Zebra Crossings
-              if (isCrosswalk) {
-                const zebraStripe = (x + y) % 2 === 0;
-                if (zebraStripe) {
-                  drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
-                }
-              }
+              if (isCrosswalk && (x + y) % 2 === 0) drawIsoTile(ctx, screen.x, screen.y, 'rgba(0, 240, 255, 0.55)', '#00f0ff');
             } else {
-              // Pedestrian Sidewalks and District Plazas
-              if (isCurb) {
-                fillColor = '#1c2438';
-                strokeColor = 'rgba(255, 42, 133, 0.5)';
-              } else if (isCommercialDistrict) {
-                // District 1: Neon Commercial Promenade pavers
-                fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625';
-                strokeColor = 'rgba(0, 240, 255, 0.25)';
-              } else if (isAkademiaDistrict) {
-                // District 2: Neo-Akademia Campus Courtyard
+              if (isCurb) { fillColor = '#1c2438'; strokeColor = 'rgba(255, 42, 133, 0.5)'; }
+              else if (isCommercialDistrict) { fillColor = (x + y) % 2 === 0 ? '#141a2c' : '#111625'; strokeColor = 'rgba(0, 240, 255, 0.25)'; }
+              else if (isAkademiaDistrict) {
                 const isCenterQuad = x >= 30 && x <= 38 && y >= 8 && y <= 16;
                 fillColor = isCenterQuad ? ((x + y) % 2 === 0 ? '#182035' : '#141a2c') : '#111625';
                 strokeColor = isCenterQuad ? 'rgba(255, 42, 133, 0.35)' : 'rgba(0, 240, 255, 0.2)';
-              } else if (isCapsuleDistrict) {
-                // District 3: Capsule Residential Sector Industrial dark tiles
-                fillColor = (x + y) % 2 === 0 ? '#121727' : '#0e1320';
-                strokeColor = 'rgba(56, 189, 248, 0.25)';
-              } else if (isMetroPlazaDistrict) {
-                // District 4: Civic Metro Plaza High-polish polished granite
-                fillColor = (x + y) % 2 === 0 ? '#161d31' : '#13192a';
-                strokeColor = 'rgba(168, 85, 247, 0.3)';
-              }
+              } else if (isCapsuleDistrict) { fillColor = (x + y) % 2 === 0 ? '#121727' : '#0e1320'; strokeColor = 'rgba(56, 189, 248, 0.25)'; }
+              else if (isMetroPlazaDistrict) { fillColor = (x + y) % 2 === 0 ? '#161d31' : '#13192a'; strokeColor = 'rgba(168, 85, 247, 0.3)'; }
 
               drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
 
-              // Shimmering wet reflections during rain
-              if (
-                (gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') &&
-                (x + y) % 4 === 0
-              ) {
+              if ((gameState.weather === 'neon_rain' || gameState.weather === 'glitch_storm') && (x + y) % 4 === 0) {
                 const sheen = (Math.sin(tick * 3.5 + x * 2 + y) + 1) / 2;
                 drawIsoTile(ctx, screen.x, screen.y, `rgba(0, 240, 255, ${0.08 + sheen * 0.16})`);
               }
@@ -1054,7 +548,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           }
         }
       } else if (gameState.currentScene === 'interior') {
-        // Specialized NPC Interior Establishment Ground Floor Grid
         const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
         const gw = est ? est.interiorSize.width : 8;
         const gh = est ? est.interiorSize.height : 8;
@@ -1065,559 +558,122 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
             let fillColor = '#101524';
             let strokeColor = 'rgba(28, 38, 59, 0.45)';
 
-            if (est?.id === 'ramen_bistro') {
-              fillColor = (x + y) % 2 === 0 ? '#261214' : '#1a0b0d';
-              strokeColor = 'rgba(239, 68, 68, 0.4)';
-            } else if (est?.id === 'ripperdoc_clinic') {
-              fillColor = (x + y) % 2 === 0 ? '#0b1928' : '#08121f';
-              strokeColor = 'rgba(0, 240, 255, 0.35)';
-            } else if (est?.id === 'robotics_garage') {
-              fillColor = (x + y) % 2 === 0 ? '#241a0d' : '#1a1309';
-              strokeColor = 'rgba(245, 158, 11, 0.4)';
-            } else if (est?.id === 'netrunner_den') {
-              fillColor = (x + y) % 2 === 0 ? '#1b0e2b' : '#130920';
-              strokeColor = 'rgba(168, 85, 247, 0.45)';
-            } else if (est?.id === 'haute_boutique') {
-              fillColor = (x + y) % 2 === 0 ? '#260e1d' : '#1c0915';
-              strokeColor = 'rgba(236, 72, 153, 0.4)';
-            }
+            if (est?.id === 'ramen_bistro') { fillColor = (x + y) % 2 === 0 ? '#261214' : '#1a0b0d'; strokeColor = 'rgba(239, 68, 68, 0.4)'; }
+            else if (est?.id === 'ripperdoc_clinic') { fillColor = (x + y) % 2 === 0 ? '#0b1928' : '#08121f'; strokeColor = 'rgba(0, 240, 255, 0.35)'; }
+            else if (est?.id === 'robotics_garage') { fillColor = (x + y) % 2 === 0 ? '#241a0d' : '#1a1309'; strokeColor = 'rgba(245, 158, 11, 0.4)'; }
+            else if (est?.id === 'netrunner_den') { fillColor = (x + y) % 2 === 0 ? '#1b0e2b' : '#130920'; strokeColor = 'rgba(168, 85, 247, 0.45)'; }
+            else if (est?.id === 'haute_boutique') { fillColor = (x + y) % 2 === 0 ? '#260e1d' : '#1c0915'; strokeColor = 'rgba(236, 72, 153, 0.4)'; }
 
             drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
           }
         }
       } else {
-        // House Interior Grid
         const gw = currentHouse.gridWidth;
         const gh = currentHouse.gridHeight;
-
         for (let x = 0; x < gw; x++) {
           for (let y = 0; y < gh; y++) {
             const screen = isoToScreen(x, y, cameraRef.current, canvas.width, canvas.height);
-
             let fillColor = '#1e293b';
             let strokeColor = 'rgba(51, 65, 85, 0.5)';
 
-            if (currentHouse.floorTheme === 'tatami') {
-              fillColor = (x + y) % 2 === 0 ? '#3f382b' : '#332d22';
-              strokeColor = '#574c38';
-            } else if (currentHouse.floorTheme === 'hologrid') {
-              fillColor = '#0b192c';
-              strokeColor = 'rgba(6, 182, 212, 0.45)';
-            } else if (currentHouse.floorTheme === 'cyberwood') {
-              fillColor = (x + y) % 2 === 0 ? '#271c19' : '#1f1513';
-              strokeColor = '#452c25';
-            } else if (currentHouse.floorTheme === 'goldchrome') {
-              fillColor = (x + y) % 2 === 0 ? '#3b2f0e' : '#2b2207';
-              strokeColor = 'rgba(234, 179, 8, 0.4)';
-            }
+            if (currentHouse.floorTheme === 'tatami') { fillColor = (x + y) % 2 === 0 ? '#3f382b' : '#332d22'; strokeColor = '#574c38'; }
+            else if (currentHouse.floorTheme === 'hologrid') { fillColor = '#0b192c'; strokeColor = 'rgba(6, 182, 212, 0.45)'; }
+            else if (currentHouse.floorTheme === 'cyberwood') { fillColor = (x + y) % 2 === 0 ? '#271c19' : '#1f1513'; strokeColor = '#452c25'; }
+            else if (currentHouse.floorTheme === 'goldchrome') { fillColor = (x + y) % 2 === 0 ? '#3b2f0e' : '#2b2207'; strokeColor = 'rgba(234, 179, 8, 0.4)'; }
 
-            const isHovered =
-              isDecorateMode &&
-              Math.floor(mouseIsoRef.current.x) === x &&
-              Math.floor(mouseIsoRef.current.y) === y;
-
-            if (isHovered) {
-              fillColor = 'rgba(6, 182, 212, 0.4)';
-              strokeColor = '#06b6d4';
-            }
-
+            const isHovered = pProps.isDecorateMode && Math.floor(mouseIsoRef.current.x) === x && Math.floor(mouseIsoRef.current.y) === y;
+            if (isHovered) { fillColor = 'rgba(6, 182, 212, 0.4)'; strokeColor = '#06b6d4'; }
             drawIsoTile(ctx, screen.x, screen.y, fillColor, strokeColor);
           }
         }
       }
 
       // 6. Depth Sorted Render Queue
-      interface DepthItem {
-        depth: number;
-        draw: () => void;
-      }
+      interface DepthItem { depth: number; draw: () => void; }
       const renderQueue: DepthItem[] = [];
 
       if (gameState.currentScene === 'town') {
-        // ===================================================================
-        // DISTRICT 1: NEON COMMERCIAL BOULEVARD (Upper Left, X: 2..19, Y: 2..19)
-        // ===================================================================
+        renderQueue.push({ depth: 4 + 2, draw: () => { const s = isoToScreen(4, 2, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'QUANTUM CORP', 6, tick, 1, '#00f0ff'); } });
+        renderQueue.push({ depth: 4 + 8, draw: () => { const s = isoToScreen(4, 8, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(245, 158, 11, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'bazaar', 1); } });
+        renderQueue.push({ depth: 4 + 15, draw: () => { const s = isoToScreen(4, 15, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'clinic', 1); } });
+        renderQueue.push({ depth: 10 + 6, draw: () => { const s = isoToScreen(10, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(239, 68, 68, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'ramen', 1); } });
+        renderQueue.push({ depth: 10 + 14, draw: () => { const s = isoToScreen(10, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(192, 132, 252, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'blackice', 1); } });
+        renderQueue.push({ depth: 16 + 6, draw: () => { const s = isoToScreen(16, 6, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(234, 179, 8, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'realty', 1); } });
+        renderQueue.push({ depth: 16 + 14, draw: () => { const s = isoToScreen(16, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(16, 185, 129, 0.3)', gameState.weather); drawBuildingFacade(ctx, s.x, s.y, 'greenhouse', 1); } });
+        renderQueue.push({ depth: 8 + 11, draw: () => { const s = isoToScreen(8, 11, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(0, 240, 255, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'drinks'); } });
 
-        // 1. Quantum Corp Commercial Skyscraper
-        renderQueue.push({
-          depth: 4 + 2,
-          draw: () => {
-            const s = isoToScreen(4, 2, cameraRef.current, canvas.width, canvas.height);
-            drawSkyscraperTower(ctx, s.x, s.y, 'QUANTUM CORP', 6, tick, 1, '#00f0ff');
-          },
+        [{ x: 6, y: 5, color: '#00f0ff' }, { x: 6, y: 12, color: '#ff2a85' }, { x: 14, y: 5, color: '#00f0ff' }, { x: 14, y: 12, color: '#f59e0b' }].forEach(l => {
+          renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
         });
-
-        // 2. Glitch & Grind Bazaar (Furniture, Hardware & Tech Shop)
-        renderQueue.push({
-          depth: 4 + 8,
-          draw: () => {
-            const s = isoToScreen(4, 8, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(245, 158, 11, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'bazaar', 1);
-          },
+        [{ x: 10, y: 10, student: false }, { x: 14, y: 9, student: true }].forEach(b => {
+          renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
         });
+        renderQueue.push({ depth: 7 + 7, draw: () => { const s = isoToScreen(7, 7, cameraRef.current, canvas.width, canvas.height); drawTrashBinAndHydrant(ctx, s.x, s.y, 1); } });
 
-        // 3. Chrome & Needle Cyber-Clinic (Cosmetics, Hair & Implants)
-        renderQueue.push({
-          depth: 4 + 15,
-          draw: () => {
-            const s = isoToScreen(4, 15, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'clinic', 1);
-          },
+        renderQueue.push({ depth: 38 + 7, draw: () => { const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x + 35, s.y - 40, 65, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawVolumetricLight(ctx, s.x - 40, s.y - 95, 60, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawAcademyComplex(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 33 + 13, draw: () => { const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloLectureStage(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 28 + 7, draw: () => { const s = isoToScreen(28, 7, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
+        renderQueue.push({ depth: 28 + 14, draw: () => { const s = isoToScreen(28, 14, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather); drawHackerKiosk(ctx, s.x, s.y, tick, 1, true); } });
+
+        [{ x: 33, y: 6 }, { x: 38, y: 16 }, { x: 42, y: 11 }].forEach(t => {
+          renderQueue.push({ depth: t.x + t.y, draw: () => { const s = isoToScreen(t.x, t.y, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 35, 40, 'rgba(0, 245, 212, 0.28)', gameState.weather); drawCyberTree(ctx, s.x, s.y, tick, 1); } });
         });
 
-        // 4. Bao's Steam Wok Ramen Bar (Hot Food & Recovery)
-        renderQueue.push({
-          depth: 10 + 6,
-          draw: () => {
-            const s = isoToScreen(10, 6, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(239, 68, 68, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'ramen', 1);
-          },
+        renderQueue.push({ depth: 29 + 11, draw: () => { const s = isoToScreen(29, 11, cameraRef.current, canvas.width, canvas.height); drawCampusSignpost(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 40 + 14, draw: () => { const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height); ctx.fillStyle = '#f59e0b'; ctx.fillRect(s.x - 7, s.y - 16 + Math.sin(tick * 4) * 2, 14, 12); if (Math.random() > 0.6) { ctx.fillStyle = '#ffffff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 22, 2, 2); ctx.fillStyle = '#00f0ff'; ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 18, 2, 2); } } });
+
+        [{ x: 27, y: 5, color: '#00f0ff' }, { x: 35, y: 5, color: '#ff2a85' }, { x: 27, y: 17, color: '#00f0ff' }].forEach(l => {
+          renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
         });
 
-        // 5. The Black Ice Cyber-Club & Arcade Hub
-        renderQueue.push({
-          depth: 10 + 14,
-          draw: () => {
-            const s = isoToScreen(10, 14, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(192, 132, 252, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'blackice', 1);
-          },
+        renderQueue.push({ depth: 5 + 28, draw: () => { const s = isoToScreen(5, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'ARASAKA MEGAPOD', 5, tick, 1, '#ef4444'); } });
+        renderQueue.push({ depth: 14 + 28, draw: () => { const s = isoToScreen(14, 28, cameraRef.current, canvas.width, canvas.height); drawSkyscraperTower(ctx, s.x, s.y, 'CAPSULE RESIDENCE', 4, tick, 1, '#38bdf8'); } });
+        renderQueue.push({ depth: 9 + 28, draw: () => { const s = isoToScreen(9, 28, cameraRef.current, canvas.width, canvas.height); drawPedestrianSkybridge(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 7 + 36, draw: () => { const s = isoToScreen(7, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(139, 92, 246, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#8b5cf6', 1); } });
+        renderQueue.push({ depth: 14 + 36, draw: () => { const s = isoToScreen(14, 36, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather); drawParkedHovercar(ctx, s.x, s.y, '#06b6d4', 1); } });
+        renderQueue.push({ depth: 10 + 41, draw: () => { const s = isoToScreen(10, 41, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(245, 158, 11, 0.28)', gameState.weather); drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'snacks'); } });
+
+        [{ x: 6, y: 33, color: '#38bdf8' }, { x: 14, y: 33, color: '#ff2a85' }, { x: 6, y: 42, color: '#38bdf8' }].forEach(l => {
+          renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
+        });
+        renderQueue.push({ depth: 11 + 35, draw: () => { const s = isoToScreen(11, 35, cameraRef.current, canvas.width, canvas.height); drawSteamGrate(ctx, s.x, s.y, tick, 1); } });
+
+        renderQueue.push({ depth: 35 + 29, draw: () => { const s = isoToScreen(35, 29, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 25, 55, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawMetroStation(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 33 + 38, draw: () => { const s = isoToScreen(33, 38, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 20, 50, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawCyberFountain(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 42 + 32, draw: () => { const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height); drawVolumetricLight(ctx, s.x, s.y - 50, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather); drawHoloBillboard(ctx, s.x, s.y, tick, 1); } });
+        renderQueue.push({ depth: 42 + 39, draw: () => { const s = isoToScreen(42, 39, cameraRef.current, canvas.width, canvas.height); drawCyberVendingMachine(ctx, s.x - 14, s.y, tick, 1, 'drinks'); drawCyberVendingMachine(ctx, s.x + 14, s.y, tick, 1, 'snacks'); } });
+
+        [{ x: 28, y: 36, student: false }, { x: 38, y: 40, student: true }].forEach(b => {
+          renderQueue.push({ depth: b.x + b.y, draw: () => { const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height); drawCyberBench(ctx, s.x, s.y, b.student, tick, 1); } });
+        });
+        [{ x: 27, y: 31, color: '#a855f7' }, { x: 38, y: 31, color: '#00f0ff' }, { x: 27, y: 42, color: '#a855f7' }].forEach(l => {
+          renderQueue.push({ depth: l.x + l.y, draw: () => { const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height); drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color); } });
         });
 
-        // 6. Apex Real Estate Tower (Sky-Lofts & Penthouses)
-        renderQueue.push({
-          depth: 16 + 6,
-          draw: () => {
-            const s = isoToScreen(16, 6, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(234, 179, 8, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'realty', 1);
-          },
-        });
-
-        // 7. Flora-Synth Botanical Greenhouse
-        renderQueue.push({
-          depth: 16 + 14,
-          draw: () => {
-            const s = isoToScreen(16, 14, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(16, 185, 129, 0.3)', gameState.weather);
-            drawBuildingFacade(ctx, s.x, s.y, 'greenhouse', 1);
-          },
-        });
-
-        // Vending Machine in District 1 (Synth-Drinks)
-        renderQueue.push({
-          depth: 8 + 11,
-          draw: () => {
-            const s = isoToScreen(8, 11, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(0, 240, 255, 0.28)', gameState.weather);
-            drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'drinks');
-          },
-        });
-
-        // Street Lamps in District 1
-        const d1Lamps = [
-          { x: 6, y: 5, color: '#00f0ff' },
-          { x: 6, y: 12, color: '#ff2a85' },
-          { x: 14, y: 5, color: '#00f0ff' },
-          { x: 14, y: 12, color: '#f59e0b' },
-        ];
-        d1Lamps.forEach(l => {
-          renderQueue.push({
-            depth: l.x + l.y,
-            draw: () => {
-              const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color);
-            },
-          });
-        });
-
-        // Benches & Trash Receptacles in District 1
-        const d1Benches = [
-          { x: 10, y: 10, student: false },
-          { x: 14, y: 9, student: true },
-        ];
-        d1Benches.forEach(b => {
-          renderQueue.push({
-            depth: b.x + b.y,
-            draw: () => {
-              const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberBench(ctx, s.x, s.y, b.student, tick, 1);
-            },
-          });
-        });
-        renderQueue.push({
-          depth: 7 + 7,
-          draw: () => {
-            const s = isoToScreen(7, 7, cameraRef.current, canvas.width, canvas.height);
-            drawTrashBinAndHydrant(ctx, s.x, s.y, 1);
-          },
-        });
-
-        // ===================================================================
-        // DISTRICT 2: NEO-AKADEMIA CAMPUS & RESEARCH QUAD (Upper Right, X: 26..44, Y: 2..19)
-        // ===================================================================
-
-        // 1. Grand Cyber Academy Complex (Centerpiece Building)
-        renderQueue.push({
-          depth: 38 + 7,
-          draw: () => {
-            const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x + 35, s.y - 40, 65, 'rgba(0, 240, 255, 0.35)', gameState.weather);
-            drawVolumetricLight(ctx, s.x - 40, s.y - 95, 60, 'rgba(255, 42, 133, 0.35)', gameState.weather);
-            drawAcademyComplex(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 2. Elevated Holographic Lecture Stage
-        renderQueue.push({
-          depth: 33 + 13,
-          draw: () => {
-            const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 25, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather);
-            drawHoloLectureStage(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 3. Hacker Study Kiosks (Alpha & Beta)
-        renderQueue.push({
-          depth: 28 + 7,
-          draw: () => {
-            const s = isoToScreen(28, 7, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather);
-            drawHackerKiosk(ctx, s.x, s.y, tick, 1, true);
-          },
-        });
-        renderQueue.push({
-          depth: 28 + 14,
-          draw: () => {
-            const s = isoToScreen(28, 14, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 30, 45, 'rgba(255, 42, 133, 0.35)', gameState.weather);
-            drawHackerKiosk(ctx, s.x, s.y, tick, 1, true);
-          },
-        });
-
-        // 4. Cyber Bonsai Trees in Akademia
-        const d2Trees = [
-          { x: 33, y: 6 },
-          { x: 38, y: 16 },
-          { x: 42, y: 11 },
-        ];
-        d2Trees.forEach(t => {
-          renderQueue.push({
-            depth: t.x + t.y,
-            draw: () => {
-              const s = isoToScreen(t.x, t.y, cameraRef.current, canvas.width, canvas.height);
-              drawVolumetricLight(ctx, s.x, s.y - 35, 40, 'rgba(0, 245, 212, 0.28)', gameState.weather);
-              drawCyberTree(ctx, s.x, s.y, tick, 1);
-            },
-          });
-        });
-
-        // 5. Wayfinding Signpost & Maintenance Drone
-        renderQueue.push({
-          depth: 29 + 11,
-          draw: () => {
-            const s = isoToScreen(29, 11, cameraRef.current, canvas.width, canvas.height);
-            drawCampusSignpost(ctx, s.x, s.y, tick, 1);
-          },
-        });
-        renderQueue.push({
-          depth: 40 + 14,
-          draw: () => {
-            const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height);
-            ctx.fillStyle = '#f59e0b';
-            ctx.fillRect(s.x - 7, s.y - 16 + Math.sin(tick * 4) * 2, 14, 12);
-            if (Math.random() > 0.6) {
-              ctx.fillStyle = '#ffffff';
-              ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 22, 2, 2);
-              ctx.fillStyle = '#00f0ff';
-              ctx.fillRect(s.x + (Math.random() * 8 - 4), s.y - 18, 2, 2);
-            }
-          },
-        });
-
-        // 6. Akademia Street Lamps & Benches
-        const d2Lamps = [
-          { x: 27, y: 5, color: '#00f0ff' },
-          { x: 35, y: 5, color: '#ff2a85' },
-          { x: 27, y: 17, color: '#00f0ff' },
-        ];
-        d2Lamps.forEach(l => {
-          renderQueue.push({
-            depth: l.x + l.y,
-            draw: () => {
-              const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color);
-            },
-          });
-        });
-
-        // ===================================================================
-        // DISTRICT 3: RESIDENTIAL CAPSULE SECTOR (Lower Left, X: 2..19, Y: 26..44)
-        // ===================================================================
-
-        // 1. Arasaka Residential Megatower Skyscraper
-        renderQueue.push({
-          depth: 5 + 28,
-          draw: () => {
-            const s = isoToScreen(5, 28, cameraRef.current, canvas.width, canvas.height);
-            drawSkyscraperTower(ctx, s.x, s.y, 'ARASAKA MEGAPOD', 5, tick, 1, '#ef4444');
-          },
-        });
-
-        // 2. District 7 Capsule Towers
-        renderQueue.push({
-          depth: 14 + 28,
-          draw: () => {
-            const s = isoToScreen(14, 28, cameraRef.current, canvas.width, canvas.height);
-            drawSkyscraperTower(ctx, s.x, s.y, 'CAPSULE RESIDENCE', 4, tick, 1, '#38bdf8');
-          },
-        });
-
-        // 3. Elevated Pedestrian Skybridge spanning between towers
-        renderQueue.push({
-          depth: 9 + 28,
-          draw: () => {
-            const s = isoToScreen(9, 28, cameraRef.current, canvas.width, canvas.height);
-            drawPedestrianSkybridge(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 4. Parked Aerodynamic Cyber Speeders
-        renderQueue.push({
-          depth: 7 + 36,
-          draw: () => {
-            const s = isoToScreen(7, 36, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(139, 92, 246, 0.3)', gameState.weather);
-            drawParkedHovercar(ctx, s.x, s.y, '#8b5cf6', 1);
-          },
-        });
-        renderQueue.push({
-          depth: 14 + 36,
-          draw: () => {
-            const s = isoToScreen(14, 36, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y, 45, 'rgba(6, 182, 212, 0.3)', gameState.weather);
-            drawParkedHovercar(ctx, s.x, s.y, '#06b6d4', 1);
-          },
-        });
-
-        // 5. Snack Vending Machine in District 3
-        renderQueue.push({
-          depth: 10 + 41,
-          draw: () => {
-            const s = isoToScreen(10, 41, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 20, 35, 'rgba(245, 158, 11, 0.28)', gameState.weather);
-            drawCyberVendingMachine(ctx, s.x, s.y, tick, 1, 'snacks');
-          },
-        });
-
-        // Lamps & Steam Grates in District 3
-        const d3Lamps = [
-          { x: 6, y: 33, color: '#38bdf8' },
-          { x: 14, y: 33, color: '#ff2a85' },
-          { x: 6, y: 42, color: '#38bdf8' },
-        ];
-        d3Lamps.forEach(l => {
-          renderQueue.push({
-            depth: l.x + l.y,
-            draw: () => {
-              const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color);
-            },
-          });
-        });
-        renderQueue.push({
-          depth: 11 + 35,
-          draw: () => {
-            const s = isoToScreen(11, 35, cameraRef.current, canvas.width, canvas.height);
-            drawSteamGrate(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // ===================================================================
-        // DISTRICT 4: CIVIC METRO PLAZA & TRANSIT HUB (Lower Right, X: 26..44, Y: 26..44)
-        // ===================================================================
-
-        // 1. Neopolis Central Metro Terminal Station
-        renderQueue.push({
-          depth: 35 + 29,
-          draw: () => {
-            const s = isoToScreen(35, 29, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 25, 55, 'rgba(0, 240, 255, 0.35)', gameState.weather);
-            drawMetroStation(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 2. Civic Holographic Light Fountain & Energy Sculpture
-        renderQueue.push({
-          depth: 33 + 38,
-          draw: () => {
-            const s = isoToScreen(33, 38, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 20, 50, 'rgba(0, 240, 255, 0.35)', gameState.weather);
-            drawCyberFountain(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 3. Giant High-Tech Street Holo-Billboard
-        renderQueue.push({
-          depth: 42 + 32,
-          draw: () => {
-            const s = isoToScreen(42, 32, cameraRef.current, canvas.width, canvas.height);
-            drawVolumetricLight(ctx, s.x, s.y - 50, 60, 'rgba(0, 240, 255, 0.35)', gameState.weather);
-            drawHoloBillboard(ctx, s.x, s.y, tick, 1);
-          },
-        });
-
-        // 4. District 4 Vending Station (Drinks & Snacks)
-        renderQueue.push({
-          depth: 42 + 39,
-          draw: () => {
-            const s = isoToScreen(42, 39, cameraRef.current, canvas.width, canvas.height);
-            drawCyberVendingMachine(ctx, s.x - 14, s.y, tick, 1, 'drinks');
-            drawCyberVendingMachine(ctx, s.x + 14, s.y, tick, 1, 'snacks');
-          },
-        });
-
-        // 5. Civic Plaza Benches & Lamps
-        const d4Benches = [
-          { x: 28, y: 36, student: false },
-          { x: 38, y: 40, student: true },
-        ];
-        d4Benches.forEach(b => {
-          renderQueue.push({
-            depth: b.x + b.y,
-            draw: () => {
-              const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberBench(ctx, s.x, s.y, b.student, tick, 1);
-            },
-          });
-        });
-        const d4Lamps = [
-          { x: 27, y: 31, color: '#a855f7' },
-          { x: 38, y: 31, color: '#00f0ff' },
-          { x: 27, y: 42, color: '#a855f7' },
-        ];
-        d4Lamps.forEach(l => {
-          renderQueue.push({
-            depth: l.x + l.y,
-            draw: () => {
-              const s = isoToScreen(l.x, l.y, cameraRef.current, canvas.width, canvas.height);
-              drawCyberStreetLamp(ctx, s.x, s.y, tick, 1, l.color);
-            },
-          });
-        });
-
-        // ===================================================================
-        // HIGHWAY INTERSECTION & TRAFFIC SIGNALS (Center X: 21..24, Y: 21..24)
-        // ===================================================================
-        // 4 Semaphore Signal Gantries at the Central Highway Intersection Corners
         const trafficSecNow = (Date.now() / 1000) % 16;
         const avenueLightNow = trafficSecNow < 6 ? 'green' : trafficSecNow < 8 ? 'yellow' : 'red';
         const boulevardLightNow = (trafficSecNow >= 8 && trafficSecNow < 14) ? 'green' : (trafficSecNow >= 14 ? 'yellow' : 'red');
         const avenueWalk = boulevardLightNow === 'green';
         const boulevardWalk = avenueLightNow === 'green';
 
-        // Post 1: North-West Corner (20, 20) - Avenue Traffic & Boulevard Crosswalk
-        renderQueue.push({
-          depth: 20 + 20,
-          draw: () => {
-            const s = isoToScreen(20, 20, cameraRef.current, canvas.width, canvas.height);
-            drawTrafficLightSignal(ctx, s.x, s.y, avenueLightNow, boulevardWalk, 1);
-          },
-        });
-        // Post 2: North-East Corner (25, 20) - Boulevard Traffic & Avenue Crosswalk
-        renderQueue.push({
-          depth: 25 + 20,
-          draw: () => {
-            const s = isoToScreen(25, 20, cameraRef.current, canvas.width, canvas.height);
-            drawTrafficLightSignal(ctx, s.x, s.y, boulevardLightNow, avenueWalk, 1);
-          },
-        });
-        // Post 3: South-West Corner (20, 25) - Boulevard Traffic & Avenue Crosswalk
-        renderQueue.push({
-          depth: 20 + 25,
-          draw: () => {
-            const s = isoToScreen(20, 25, cameraRef.current, canvas.width, canvas.height);
-            drawTrafficLightSignal(ctx, s.x, s.y, boulevardLightNow, avenueWalk, 1);
-          },
-        });
-        // Post 4: South-East Corner (25, 25) - Avenue Traffic & Boulevard Crosswalk
-        renderQueue.push({
-          depth: 25 + 25,
-          draw: () => {
-            const s = isoToScreen(25, 25, cameraRef.current, canvas.width, canvas.height);
-            drawTrafficLightSignal(ctx, s.x, s.y, avenueLightNow, boulevardWalk, 1);
-          },
+        [{ x: 20, y: 20, l1: avenueLightNow, w: boulevardWalk }, { x: 25, y: 20, l1: boulevardLightNow, w: avenueWalk }, { x: 20, y: 25, l1: boulevardLightNow, w: avenueWalk }, { x: 25, y: 25, l1: avenueLightNow, w: boulevardWalk }].forEach(post => {
+          renderQueue.push({ depth: post.x + post.y, draw: () => { const s = isoToScreen(post.x, post.y, cameraRef.current, canvas.width, canvas.height); drawTrafficLightSignal(ctx, s.x, s.y, post.l1 as any, post.w, 1); } });
         });
 
-
-        // Hovering Surveillance Drone patrolling the Central Highway
         const droneIsoX = 22.5 + Math.sin(tick * 0.7) * 4.5;
         const droneIsoY = 22.5 + Math.cos(tick * 0.7) * 4.5;
-        renderQueue.push({
-          depth: Math.floor(droneIsoX + droneIsoY) + 1,
-          draw: () => {
-            const s = isoToScreen(droneIsoX, droneIsoY, cameraRef.current, canvas.width, canvas.height);
-            drawSurveillanceDrone(ctx, s.x, s.y - 32, tick, 1);
-          },
-        });
+        renderQueue.push({ depth: Math.floor(droneIsoX + droneIsoY) + 1, draw: () => { const s = isoToScreen(droneIsoX, droneIsoY, cameraRef.current, canvas.width, canvas.height); drawSurveillanceDrone(ctx, s.x, s.y - 32, tick, 1); } });
 
-        // ===================================================================
-        // DYNAMIC MOVING TRAFFIC (Hover Taxis, Speeders, Patrols, Cargo)
-        // ===================================================================
         trafficVehiclesRef.current.forEach(veh => {
-          renderQueue.push({
-            depth: veh.x + veh.y,
-            draw: () => {
-              const s = isoToScreen(veh.x, veh.y, cameraRef.current, canvas.width, canvas.height);
-              drawMovingTrafficVehicle(ctx, s.x, s.y, veh.type, veh.dir, tick, 1);
-            },
-          });
+          renderQueue.push({ depth: veh.x + veh.y, draw: () => { const s = isoToScreen(veh.x, veh.y, cameraRef.current, canvas.width, canvas.height); drawMovingTrafficVehicle(ctx, s.x, s.y, veh.type, veh.dir, tick, 1); } });
         });
 
-        // ===================================================================
-        // AMBIENT CITIZENS WALKING THE STREETS (12 Pedestrians)
-        // ===================================================================
         citizensRef.current.forEach(cit => {
-          renderQueue.push({
-            depth: cit.x + cit.y,
-            draw: () => {
-              const s = isoToScreen(cit.x, cit.y, cameraRef.current, canvas.width, canvas.height);
-              drawCharacter(
-                ctx,
-                s.x,
-                s.y,
-                cit.appearance,
-                cit.dir,
-                cit.pauseTicks <= 0,
-                tick,
-                1
-              );
-            },
-          });
+          renderQueue.push({ depth: cit.x + cit.y, draw: () => { const s = isoToScreen(cit.x, cit.y, cameraRef.current, canvas.width, canvas.height); drawCharacter(ctx, s.x, s.y, cit.appearance, cit.dir, cit.pauseTicks <= 0, tick, 1); } });
         });
 
-        // ===================================================================
-        // DYNAMIC SCHEDULED STORY NPCS (Dex, Nyx, Sparks, Vane, Bao)
-        // ===================================================================
         Object.values(gameState.npcs).forEach(npc => {
-          const walker = storyNPCWalkersRef.current[npc.id] || {
-            id: npc.id,
-            currentX: npc.x,
-            currentY: npc.y,
-            targetX: npc.x,
-            targetY: npc.y,
-            dir: 'SE' as const,
-            isWalking: false,
-            speed: 0.045,
-            pauseTicks: 0,
-            currentSlot: getNPCScheduleForHour(npc, gameState.timeHour),
-            statusMessage: npc.role,
-          };
-
+          const walker = storyNPCWalkersRef.current[npc.id] || { id: npc.id, currentX: npc.x, currentY: npc.y, targetX: npc.x, targetY: npc.y, dir: 'SE', isWalking: false, speed: 0.045, pauseTicks: 0, currentSlot: getNPCScheduleForHour(npc, gameState.timeHour), statusMessage: npc.role };
           const posX = walker.currentX;
           const posY = walker.currentY;
 
@@ -1625,44 +681,18 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
             depth: posX + posY,
             draw: () => {
               const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
+              drawCharacter(ctx, s.x, s.y, { name: npc.name.split(' ')[0], skinTone: npc.avatarStyle.skin, hairStyle: npc.avatarStyle.hairStyle, hairColor: npc.avatarStyle.hair, implant: npc.portraitImplant, implantColor: npc.portraitColor, outfitStyle: npc.avatarStyle.outfit, outfitColor: npc.portraitColor }, walker.dir, walker.isWalking, tick, 1);
 
-              // 1. Draw animated character sprite (with moving legs if commuting)
-              drawCharacter(
-                ctx,
-                s.x,
-                s.y,
-                {
-                  name: npc.name.split(' ')[0],
-                  skinTone: npc.avatarStyle.skin,
-                  hairStyle: npc.avatarStyle.hairStyle,
-                  hairColor: npc.avatarStyle.hair,
-                  implant: npc.portraitImplant,
-                  implantColor: npc.portraitColor,
-                  outfitStyle: npc.avatarStyle.outfit,
-                  outfitColor: npc.portraitColor,
-                },
-                walker.dir,
-                walker.isWalking,
-                tick,
-                1
-              );
-
-              // 2. Distinctive Overhead Nameplate & Dynamic Schedule Badge
-              const distToPlayer = Math.hypot(playerIso.x - posX, playerIso.y - posY);
+              const distToPlayer = Math.hypot(playerRef.current.x - posX, playerRef.current.y - posY);
               if (distToPlayer < 7.5) {
                 ctx.save();
                 ctx.font = 'bold 9px monospace';
                 const nameText = npc.name.split(' ')[0];
-                const roleText = walker.isWalking
-                  ? '🚶 Commuting'
-                  : (walker.currentSlot ? walker.currentSlot.timeLabel : npc.role);
-
+                const roleText = walker.isWalking ? '🚶 Commuting' : (walker.currentSlot ? walker.currentSlot.timeLabel : npc.role);
                 ctx.textAlign = 'center';
-                const textWidth = Math.max(ctx.measureText(nameText).width, ctx.measureText(roleText).width);
-                const badgeWidth = textWidth + 16;
+                const badgeWidth = Math.max(ctx.measureText(nameText).width, ctx.measureText(roleText).width) + 16;
                 const badgeY = s.y - 48;
 
-                // Frame
                 ctx.fillStyle = 'rgba(6, 11, 25, 0.88)';
                 ctx.strokeStyle = walker.isWalking ? '#f59e0b' : npc.portraitColor;
                 ctx.lineWidth = 1;
@@ -1671,24 +701,17 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
                 ctx.fill();
                 ctx.stroke();
 
-                // Top text: Name
                 ctx.fillStyle = npc.portraitColor;
                 ctx.fillText(nameText, s.x, badgeY - 2);
-
-                // Bottom text: schedule period or commuting tag
                 ctx.font = '7.5px monospace';
                 ctx.fillStyle = walker.isWalking ? '#fbbf24' : '#94a3b8';
                 ctx.fillText(roleText, s.x, badgeY + 6);
 
-                // 3. Proximity Activity Bubble (when player is close, shows what they are doing)
                 if (distToPlayer < 3.5 && walker.currentSlot) {
-                  const actText = walker.isWalking
-                    ? `En route: ${walker.currentSlot.locationName}`
-                    : walker.currentSlot.activity;
+                  const actText = walker.isWalking ? `En route: ${walker.currentSlot.locationName}` : walker.currentSlot.activity;
                   ctx.font = '8px monospace';
                   const actWidth = ctx.measureText(actText).width + 12;
                   const bubbleY = s.y - 70;
-
                   ctx.fillStyle = 'rgba(15, 23, 42, 0.94)';
                   ctx.strokeStyle = '#00f0ff';
                   ctx.lineWidth = 1;
@@ -1696,11 +719,9 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
                   ctx.roundRect(s.x - actWidth / 2, bubbleY - 9, actWidth, 16, 4);
                   ctx.fill();
                   ctx.stroke();
-
                   ctx.fillStyle = '#00f0ff';
                   ctx.fillText(actText, s.x, bubbleY + 2);
                 }
-
                 ctx.restore();
               }
             },
@@ -1709,55 +730,19 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
       } else if (gameState.currentScene === 'interior') {
         const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
         if (est) {
-          // 1. Establishment Themed Placed Furniture
           est.placedFurniture.forEach(item => {
             const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
             if (!furnDef) return;
-
-            renderQueue.push({
-              depth: item.x + item.y,
-              draw: () => {
-                const s = isoToScreen(
-                  item.x + furnDef.width / 2,
-                  item.y + furnDef.height / 2,
-                  cameraRef.current,
-                  canvas.width,
-                  canvas.height
-                );
-                drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1);
-              },
-            });
+            renderQueue.push({ depth: item.x + item.y, draw: () => { const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height); drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1); } });
           });
 
-          // 2. The Specialist Story NPC inside their establishment
           const npc = gameState.npcs[est.npcId];
           if (npc) {
             renderQueue.push({
               depth: 3 + 2,
               draw: () => {
                 const s = isoToScreen(3, 2, cameraRef.current, canvas.width, canvas.height);
-                drawCharacter(
-                  ctx,
-                  s.x,
-                  s.y,
-                  {
-                    name: npc.name,
-                    skinTone: npc.avatarStyle?.skin || '#fbd0b4',
-                    hairStyle: (npc.avatarStyle?.hairStyle as any) || 'slick',
-                    hairColor: npc.portraitHair || '#00f0ff',
-                    implant: (npc.portraitImplant as any) || 'visor',
-                    implantColor: npc.portraitColor || '#00f0ff',
-                    outfitStyle: (npc.avatarStyle?.outfit as any) || 'duster',
-                    outfitColor: npc.portraitColor || '#38bdf8',
-                    droneCompanion: 'none',
-                  },
-                  'SE',
-                  false,
-                  tick,
-                  1
-                );
-
-                // Specialist NPC Name & Establishment Role Badge
+                drawCharacter(ctx, s.x, s.y, { name: npc.name, skinTone: npc.avatarStyle?.skin || '#fbd0b4', hairStyle: (npc.avatarStyle?.hairStyle as any) || 'slick', hairColor: npc.portraitHair || '#00f0ff', implant: (npc.portraitImplant as any) || 'visor', implantColor: npc.portraitColor || '#00f0ff', outfitStyle: (npc.avatarStyle?.outfit as any) || 'duster', outfitColor: npc.portraitColor || '#38bdf8', droneCompanion: 'none' }, 'SE', false, tick, 1);
                 ctx.save();
                 ctx.textAlign = 'center';
                 ctx.font = 'bold 9px "Chakra Petch", sans-serif';
@@ -1771,7 +756,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
             });
           }
 
-          // 3. Exit Doorway back to Neopolis
           const exitX = est.interiorSize.width - 1;
           const exitY = est.interiorSize.height - 1;
           renderQueue.push({
@@ -1789,24 +773,15 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           });
         }
       } else {
-        // Inside apartment
         currentHouse.placedFurniture.forEach(item => {
           const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
           if (!furnDef) return;
-
           renderQueue.push({
             depth: item.x + item.y,
             draw: () => {
-              const s = isoToScreen(
-                item.x + furnDef.width / 2,
-                item.y + furnDef.height / 2,
-                cameraRef.current,
-                canvas.width,
-                canvas.height
-              );
-              const isSelected = selectedPlacedId === item.instanceId;
+              const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height);
+              const isSelected = pProps.selectedPlacedId === item.instanceId;
               drawFurniture(ctx, s.x, s.y, furnDef, item.rotation, 1);
-
               if (isSelected) {
                 ctx.strokeStyle = '#06b6d4';
                 ctx.lineWidth = 2;
@@ -1816,7 +791,6 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
           });
         });
 
-        // Exit doorway
         const exitX = currentHouse.gridWidth - 1;
         const exitY = currentHouse.gridHeight - 1;
         renderQueue.push({
@@ -1833,16 +807,13 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
         });
       }
 
-
       // 7. Player Character
       renderQueue.push({
-        depth: playerIso.x + playerIso.y,
+        depth: playerRef.current.x + playerRef.current.y,
         draw: () => {
-          const s = isoToScreen(playerIso.x, playerIso.y, cameraRef.current, canvas.width, canvas.height);
+          const s = isoToScreen(playerRef.current.x, playerRef.current.y, cameraRef.current, canvas.width, canvas.height);
           drawCharacter(
-            ctx,
-            s.x,
-            s.y,
+            ctx, s.x, s.y,
             {
               name: gameState.player.name,
               skinTone: gameState.player.skinTone,
@@ -1852,56 +823,37 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
               implantColor: gameState.player.implantColor,
               outfitStyle: gameState.equippedCosmetics.outfitStyle || gameState.player.outfitStyle,
               outfitColor: gameState.equippedCosmetics.outfitColor || gameState.player.outfitColor,
-              droneCompanion:
-                (gameState.equippedCosmetics.drone as 'none' | 'holo_cat' | 'nano_drone') ||
-                gameState.player.droneCompanion,
+              droneCompanion: (gameState.equippedCosmetics.drone as 'none' | 'holo_cat' | 'nano_drone') || gameState.player.droneCompanion,
             },
-            playerDir,
-            isMoving,
+            playerRef.current.dir,
+            playerRef.current.isMoving,
             tick,
             1
           );
         },
       });
 
-      // Sort all scene items by depth and draw
       renderQueue.sort((a, b) => a.depth - b.depth);
       renderQueue.forEach(item => item.draw());
 
       // 8. Ghost preview for Decorate Mode
-      if (isDecorateMode && selectedCatalogItem) {
+      if (pProps.isDecorateMode && pProps.selectedCatalogItem) {
         const mx = Math.floor(mouseIsoRef.current.x);
         const my = Math.floor(mouseIsoRef.current.y);
         if (mx >= 0 && mx < currentHouse.gridWidth && my >= 0 && my < currentHouse.gridHeight) {
-          const s = isoToScreen(
-            mx + selectedCatalogItem.width / 2,
-            my + selectedCatalogItem.height / 2,
-            cameraRef.current,
-            canvas.width,
-            canvas.height
-          );
+          const s = isoToScreen(mx + pProps.selectedCatalogItem.width / 2, my + pProps.selectedCatalogItem.height / 2, cameraRef.current, canvas.width, canvas.height);
           ctx.save();
           ctx.globalAlpha = 0.65;
-          drawFurniture(ctx, s.x, s.y, selectedCatalogItem, 0, 1);
+          drawFurniture(ctx, s.x, s.y, pProps.selectedCatalogItem, 0, 1);
           ctx.restore();
         }
       }
 
-      // 9. Weather Atmosphere Overlays (Acid fog, rain, glitch storms & Day/Night lighting)
-      drawWeatherOverlay(
-        ctx,
-        canvas.width,
-        canvas.height,
-        tick,
-        gameState.weather,
-        lightningFlashRef.current,
-        ripplesRef.current,
-        gameState.timeHour
-      );
+      // 9. Weather Atmosphere Overlays
+      drawWeatherOverlay(ctx, canvas.width, canvas.height, tick, gameState.weather, lightningFlashRef.current, ripplesRef.current, gameState.timeHour);
 
-
-      // 10. Floating Damage / XP / Credit Texts
-      floatingTexts.forEach(ft => {
+      // 10. Floating Texts
+      floatingTextsRef.current.forEach(ft => {
         const age = now - ft.createdAt;
         const ageRatio = age / 1800;
         const s = isoToScreen(ft.x, ft.y, cameraRef.current, canvas.width, canvas.height);
@@ -1918,541 +870,187 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
         ctx.restore();
       });
 
-      // 11. Calculate Proximity Prompt for Nearby Interactables
-      let foundPrompt: typeof nearbyPrompt = null;
+      // 11. CÁLCULO DE PROMPTS & SINCRONIZAÇÃO UI
+      let foundPrompt = null;
+      const px = playerRef.current.x;
+      const py = playerRef.current.y;
 
       if (gameState.currentScene === 'town') {
-        const px = playerIso.x;
-        const py = playerIso.y;
-
-        // 1. Dynamic Scheduled Story NPCs
         Object.values(gameState.npcs).forEach(npc => {
           const walker = storyNPCWalkersRef.current[npc.id];
           const posX = walker ? walker.currentX : npc.x;
           const posY = walker ? walker.currentY : npc.y;
-          const dist = Math.hypot(px - posX, py - posY);
-
-          if (dist < 2.2 && !foundPrompt) {
+          if (Math.hypot(px - posX, py - posY) < 2.2 && !foundPrompt) {
             const s = isoToScreen(posX, posY, cameraRef.current, canvas.width, canvas.height);
-            const statusSummary = walker?.isWalking
-              ? `Commuting to ${walker.currentSlot?.locationName || 'Station'}`
-              : (walker?.currentSlot?.activity || npc.role);
-
             foundPrompt = {
-              text: `[E] Talk with ${npc.name} (${statusSummary})`,
-              action: () => {
-                onInteractNPC({
-                  ...npc,
-                  locationName: walker?.currentSlot?.locationName || npc.locationName,
-                  currentActivity: walker?.currentSlot?.activity,
-                  x: posX,
-                  y: posY,
-                });
-              },
-              x: s.x,
-              y: s.y - 50,
+              text: `[E] Talk with ${npc.name} (${walker?.isWalking ? `Commuting to ${walker.currentSlot?.locationName || 'Station'}` : (walker?.currentSlot?.activity || npc.role)})`,
+              action: () => pProps.onInteractNPC({ ...npc, locationName: walker?.currentSlot?.locationName || npc.locationName, currentActivity: walker?.currentSlot?.activity, x: posX, y: posY }),
+              x: s.x, y: s.y - 50,
             };
           }
         });
 
-        // 2. Interactive Storefronts & Enterable Specialist NPC Establishments
         if (!foundPrompt) {
           const storefronts = [
-            // Chef Bao's Specialized Ramen Restaurant
-            {
-              x: 10,
-              y: 7,
-              label: "Entrar: Bistrô de Ramen do Chef Bao",
-              action: () => {
-                sound.playChirp(1.1);
-                if (onEnterInterior) onEnterInterior('ramen_bistro');
-              },
-            },
-            // Dex Mercer's Specialized Ripperdoc Studio
-            {
-              x: 4,
-              y: 15,
-              label: 'Entrar: Clínica Ripperdoc do Dex',
-              action: () => {
-                sound.playChirp(1.1);
-                if (onEnterInterior) onEnterInterior('ripperdoc_clinic');
-              },
-            },
-            // Sparks Tanaka's Specialized Robotics Garage
-            {
-              x: 40,
-              y: 14,
-              label: "Entrar: Oficina de Drones da Sparks",
-              action: () => {
-                sound.playChirp(1.1);
-                if (onEnterInterior) onEnterInterior('robotics_garage');
-              },
-            },
-            // Nyx Nightshade's Specialized Netrunner Sanctuary
-            {
-              x: 14,
-              y: 6,
-              label: 'Entrar: Santuário Netrunner da Nyx',
-              action: () => {
-                sound.playChirp(1.1);
-                if (onEnterInterior) onEnterInterior('netrunner_den');
-              },
-            },
-            // Vane Cross's Specialized Haute Boutique & Executive Suite
-            {
-              x: 38,
-              y: 35,
-              label: 'Entrar: Boutique de Luxo do Vane',
-              action: () => {
-                sound.playChirp(1.1);
-                if (onEnterInterior) onEnterInterior('haute_boutique');
-              },
-            },
-            // Glitch & Grind Bazaar (Furniture Store)
-            {
-              x: 4,
-              y: 8,
-              label: 'Glitch & Grind Bazaar (Móveis)',
-              action: () => onOpenStoreTab?.('furniture'),
-            },
-            // The Black Ice Arcade
-            {
-              x: 10,
-              y: 14,
-              label: 'The Black Ice Arcade (-10⚡)',
-              action: () => {
-                if (onConsumeEnergy && !onConsumeEnergy(10, 'Arcade Game')) {
-                  addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                  sound.playChirp(0.6);
-                  return;
-                }
-                onInteractArcade();
-              },
-            },
-            // Apex Real Estate
-            {
-              x: 16,
-              y: 6,
-              label: 'Apex Real Estate (Imóveis)',
-              action: () => onOpenStoreTab?.('realty'),
-            },
-            // Flora-Synth Botanical Greenhouse
-            {
-              x: 16,
-              y: 14,
-              label: 'Colheita Flora-Synth (-10⚡, +45 CR)',
-              action: () => {
-                if (onConsumeEnergy && !onConsumeEnergy(10, 'Colheita Hidropônica')) {
-                  addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                  sound.playChirp(0.6);
-                  return;
-                }
-                sound.playCredit();
-                addFloatingText('+45 CR', '#10b981');
-                onActionReward(45, 20, 'Colheita em Estufa Flora-Synth');
-              },
-            },
-            // Metro Station Terminal in District 4
-            {
-              x: 35,
-              y: 29,
-              label: 'Neo-Metro Rapid Transit (+30⚡, +Exp)',
-              action: () => {
-                sound.playNewsBroadcast();
-                addFloatingText('TRANSIT PASS // +30 ENERGIA', '#00f0ff');
-                onActionReward(30, 25, 'Rode Neo-Metro Skyway Line');
-              },
-            },
-            // Civic Light Fountain in District 4
-            {
-              x: 33,
-              y: 38,
-              label: 'Meditar na Fonte Quântica (+25⚡)',
-              action: () => {
-                sound.playRest();
-                addFloatingText('+25 Energia', '#c084fc');
-                onActionReward(25, 20, 'Refletiu na Fonte Cívica');
-              },
-            },
+            { x: 10, y: 7, label: "Entrar: Bistrô de Ramen do Chef Bao", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ramen_bistro'); } },
+            { x: 4, y: 15, label: 'Entrar: Clínica Ripperdoc do Dex', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('ripperdoc_clinic'); } },
+            { x: 40, y: 14, label: "Entrar: Oficina de Drones da Sparks", action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('robotics_garage'); } },
+            { x: 14, y: 6, label: 'Entrar: Santuário Netrunner da Nyx', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('netrunner_den'); } },
+            { x: 38, y: 35, label: 'Entrar: Boutique de Luxo do Vane', action: () => { sound.playChirp(1.1); pProps.onEnterInterior?.('haute_boutique'); } },
+            { x: 4, y: 8, label: 'Glitch & Grind Bazaar (Móveis)', action: () => pProps.onOpenStoreTab?.('furniture') },
+            { x: 10, y: 14, label: 'The Black Ice Arcade (-10⚡)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Arcade Game')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } pProps.onInteractArcade(); } },
+            { x: 16, y: 6, label: 'Apex Real Estate (Imóveis)', action: () => pProps.onOpenStoreTab?.('realty') },
+            { x: 16, y: 14, label: 'Colheita Flora-Synth (-10⚡, +45 CR)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(10, 'Colheita Hidropônica')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); sound.playChirp(0.6); return; } sound.playCredit(); addFloatingText('+45 CR', '#10b981'); pProps.onActionReward(45, 20, 'Colheita em Estufa'); } },
+            { x: 35, y: 29, label: 'Neo-Metro Rapid Transit (+30⚡, +Exp)', action: () => { sound.playNewsBroadcast(); addFloatingText('TRANSIT PASS // +30 ENERGIA', '#00f0ff'); pProps.onActionReward(30, 25, 'Rode Neo-Metro'); } },
+            { x: 33, y: 38, label: 'Meditar na Fonte Quântica (+25⚡)', action: () => { sound.playRest(); addFloatingText('+25 Energia', '#c084fc'); pProps.onActionReward(25, 20, 'Refletiu na Fonte Cívica'); } },
           ];
-
           for (const store of storefronts) {
-            const dist = Math.hypot(px - store.x, py - store.y);
-            if (dist < 2.2) {
+            if (Math.hypot(px - store.x, py - store.y) < 2.2) {
               const s = isoToScreen(store.x, store.y, cameraRef.current, canvas.width, canvas.height);
-              foundPrompt = {
-                text: `[E] ${store.label}`,
-                action: store.action,
-                x: s.x,
-                y: s.y - 45,
-              };
+              foundPrompt = { text: `[E] ${store.label}`, action: store.action, x: s.x, y: s.y - 45 };
               break;
             }
           }
         }
 
-
-        // 3. Ambient Citizens Greetings
         if (!foundPrompt) {
           for (const cit of citizensRef.current) {
-            const dist = Math.hypot(px - cit.x, py - cit.y);
-            if (dist < 1.8) {
+            if (Math.hypot(px - cit.x, py - cit.y) < 1.8) {
               const s = isoToScreen(cit.x, cit.y, cameraRef.current, canvas.width, canvas.height);
-              foundPrompt = {
-                text: `[E] Greet ${cit.name} (Citizen)`,
-                action: () => {
-                  sound.playChirp(1.2);
-                  addFloatingText(cit.greeting, '#38bdf8');
-                  onActionReward(10, 5, `Greeted ${cit.name}`);
-                },
-                x: s.x,
-                y: s.y - 45,
-              };
+              foundPrompt = { text: `[E] Greet ${cit.name}`, action: () => { sound.playChirp(1.2); addFloatingText(cit.greeting, '#38bdf8'); pProps.onActionReward(10, 5, `Greeted ${cit.name}`); }, x: s.x, y: s.y - 45 };
               break;
             }
           }
         }
 
-        // 4. Hacker Study Kiosks (28, 7) and (28, 14)
         if (!foundPrompt) {
-          [
-            { x: 28, y: 7, label: 'Workstation Alpha' },
-            { x: 28, y: 14, label: 'Workstation Beta' },
-          ].forEach(kiosk => {
-            const dist = Math.hypot(px - kiosk.x, py - kiosk.y);
-            if (dist < 1.8) {
-              const s = isoToScreen(kiosk.x, kiosk.y, cameraRef.current, canvas.width, canvas.height);
-              foundPrompt = {
-                text: `[E] Hack ${kiosk.label} (+Credits)`,
-                action: onInteractTerminal,
-                x: s.x,
-                y: s.y - 40,
-              };
+          [{ x: 28, y: 7, label: 'Workstation Alpha' }, { x: 28, y: 14, label: 'Workstation Beta' }].forEach(k => {
+            if (Math.hypot(px - k.x, py - k.y) < 1.8) {
+              const s = isoToScreen(k.x, k.y, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = { text: `[E] Hack ${k.label} (+Credits)`, action: pProps.onInteractTerminal, x: s.x, y: s.y - 40 };
             }
           });
         }
 
-        // 5. Grand Academy Residence Entrance (38, 7)
-        if (!foundPrompt) {
-          const academyDist = Math.hypot(px - 38, py - 7);
-          if (academyDist < 2.5) {
-            const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = {
-              text: `[E] Enter Academy Residence (${currentHouse.name})`,
-              action: () => onEnterHouse(currentHouse.id),
-              x: s.x,
-              y: s.y - 50,
-            };
-          }
+        if (!foundPrompt && Math.hypot(px - 38, py - 7) < 2.5) {
+          const s = isoToScreen(38, 7, cameraRef.current, canvas.width, canvas.height);
+          foundPrompt = { text: `[E] Enter Academy Residence (${currentHouse.name})`, action: () => pProps.onEnterHouse(currentHouse.id), x: s.x, y: s.y - 50 };
         }
 
-        // 6. Holographic Lecture Stage (33, 13)
-        if (!foundPrompt) {
-          const stageDist = Math.hypot(px - 33, py - 13);
-          if (stageDist < 2.2) {
-            const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = {
-              text: '[E] Attend AI Holo-Lecture (+50 CR, +25 Cyber-EXP)',
-              action: () => {
-                sound.playLevelUp();
-                addFloatingText('+50 CR', '#00f0ff');
-                onActionReward(50, 25, 'Attended AI Holo-Lecture');
-              },
-              x: s.x,
-              y: s.y - 45,
-            };
-          }
+        if (!foundPrompt && Math.hypot(px - 33, py - 13) < 2.2) {
+          const s = isoToScreen(33, 13, cameraRef.current, canvas.width, canvas.height);
+          foundPrompt = { text: '[E] Attend AI Holo-Lecture (+50 CR, +25 Cyber-EXP)', action: () => { sound.playLevelUp(); addFloatingText('+50 CR', '#00f0ff'); pProps.onActionReward(50, 25, 'Attended AI Holo-Lecture'); }, x: s.x, y: s.y - 45 };
         }
 
-        // 7. Cyber Vending Machines across districts
         if (!foundPrompt) {
-          const vendingSpots = [
-            { x: 8, y: 11, name: 'Synth-Drink Dispenser (Commercial)', category: 'drink' as const },
-            { x: 10, y: 41, name: 'Cyber-Snack Dispenser (Capsule)', category: 'snack' as const },
-            { x: 42, y: 39, name: 'Plaza Vending Station', category: 'all' as const },
-          ];
-          for (const spot of vendingSpots) {
-            const vendDist = Math.hypot(px - spot.x, py - spot.y);
-            if (vendDist < 2.0) {
-              const s = isoToScreen(spot.x, spot.y, cameraRef.current, canvas.width, canvas.height);
-              foundPrompt = {
-                text: `[E] Open ${spot.name} (+Energy Menu)`,
-                action: () => onInteractVendingMachine(spot.category),
-                x: s.x,
-                y: s.y - 35,
-              };
-              break;
+          [{ x: 8, y: 11, n: 'Synth-Drink Dispenser', c: 'drink' }, { x: 10, y: 41, n: 'Cyber-Snack Dispenser', c: 'snack' }, { x: 42, y: 39, n: 'Plaza Vending Station', c: 'all' }].forEach(v => {
+            if (Math.hypot(px - v.x, py - v.y) < 2.0) {
+              const s = isoToScreen(v.x, v.y, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = { text: `[E] Open ${v.n}`, action: () => pProps.onInteractVendingMachine(v.c as any), x: s.x, y: s.y - 35 };
             }
-          }
+          });
         }
 
-        // 8. Cyber Benches
         if (!foundPrompt) {
-          const benches = [
-            { x: 10, y: 10 },
-            { x: 14, y: 9 },
-            { x: 28, y: 36 },
-            { x: 38, y: 40 },
-          ];
-          for (const bench of benches) {
-            const dist = Math.hypot(px - bench.x, py - bench.y);
-            if (dist < 1.8) {
-              const s = isoToScreen(bench.x, bench.y, cameraRef.current, canvas.width, canvas.height);
-              foundPrompt = {
-                text: '[E] Rest on Cyber-Bench (+25 Energy)',
-                action: () => {
-                  sound.playRest();
-                  addFloatingText('+25 Energy', '#38bdf8');
-                  onActionReward(0, 10, 'Rested on Cyber-Bench');
-                },
-                x: s.x,
-                y: s.y - 35,
-              };
-              break;
+          [{ x: 10, y: 10 }, { x: 14, y: 9 }, { x: 28, y: 36 }, { x: 38, y: 40 }].forEach(b => {
+            if (Math.hypot(px - b.x, py - b.y) < 1.8) {
+              const s = isoToScreen(b.x, b.y, cameraRef.current, canvas.width, canvas.height);
+              foundPrompt = { text: '[E] Rest on Cyber-Bench (+25 Energy)', action: () => { sound.playRest(); addFloatingText('+25 Energy', '#38bdf8'); pProps.onActionReward(0, 10, 'Rested on Bench'); }, x: s.x, y: s.y - 35 };
             }
-          }
+          });
         }
 
-        // 9. Malfunctioning Drone (40, 14)
-        if (!foundPrompt) {
-          const droneDist = Math.hypot(px - 40, py - 14);
-          if (droneDist < 1.9) {
-            const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = {
-              text: '[E] Reparar Drone (-15⚡, +60 CR, +30 Eng)',
-              action: () => {
-                if (onConsumeEnergy && !onConsumeEnergy(15, 'Reparo de Drone')) {
-                  addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                  sound.playChirp(0.6);
-                  return;
-                }
-                onInteractRepairBot();
-              },
-              x: s.x,
-              y: s.y - 35,
-            };
-          }
+        if (!foundPrompt && Math.hypot(px - 40, py - 14) < 1.9) {
+          const s = isoToScreen(40, 14, cameraRef.current, canvas.width, canvas.height);
+          foundPrompt = { text: '[E] Reparar Drone (-15⚡, +60 CR, +30 Eng)', action: () => { if (pProps.onConsumeEnergy && !pProps.onConsumeEnergy(15, 'Reparo de Drone')) { addFloatingText('⚠️ NANITES ESGOTADOS!', '#ef4444'); return; } pProps.onInteractRepairBot(); }, x: s.x, y: s.y - 35 };
         }
       } else if (gameState.currentScene === 'interior') {
-        // Inside Specialized NPC Establishment
         const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
         if (est) {
           const npc = gameState.npcs[est.npcId];
-          const distToNpc = Math.hypot(playerIso.x - 3, playerIso.y - 2);
-
-          // Proximity to the Specialist NPC inside their shop/studio
-          if (distToNpc < 2.2 && npc && !foundPrompt) {
+          if (Math.hypot(px - 3, py - 2) < 2.2 && npc && !foundPrompt) {
             const s = isoToScreen(3, 2, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = {
-              text: `[E] Falar com ${npc.name} (${npc.role})`,
-              action: () => {
-                sound.playChirp(1.0);
-                onInteractNPC(npc);
-              },
-              x: s.x,
-              y: s.y - 50,
-            };
+            foundPrompt = { text: `[E] Falar com ${npc.name}`, action: () => { sound.playChirp(1.0); pProps.onInteractNPC(npc); }, x: s.x, y: s.y - 50 };
           }
-
-          // Exit Doorway to Neopolis Metropolis
-          const exitX = est.interiorSize.width - 1;
-          const exitY = est.interiorSize.height - 1;
-          const exitDist = Math.hypot(playerIso.x - exitX, playerIso.y - exitY);
-          if (exitDist < 1.8 && !foundPrompt) {
-            const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
-            foundPrompt = {
-              text: '[E] Sair para Neopolis Metropolis',
-              action: () => {
-                sound.playChirp(0.9);
-                if (onExitInterior) onExitInterior();
-                else onExitHouse();
-              },
-              x: s.x,
-              y: s.y - 35,
-            };
+          if (Math.hypot(px - (est.interiorSize.width - 1), py - (est.interiorSize.height - 1)) < 1.8 && !foundPrompt) {
+            const s = isoToScreen(est.interiorSize.width - 1, est.interiorSize.height - 1, cameraRef.current, canvas.width, canvas.height);
+            foundPrompt = { text: '[E] Sair para Metropolis', action: () => { sound.playChirp(0.9); pProps.onExitInterior ? pProps.onExitInterior() : pProps.onExitHouse(); }, x: s.x, y: s.y - 35 };
           }
         }
       } else {
-        // Inside apartment
-        const exitX = currentHouse.gridWidth - 1;
-        const exitY = currentHouse.gridHeight - 1;
-        const exitDist = Math.hypot(playerIso.x - exitX, playerIso.y - exitY);
-        if (exitDist < 1.8) {
-          const s = isoToScreen(exitX, exitY, cameraRef.current, canvas.width, canvas.height);
-          foundPrompt = {
-            text: '[E] Sair para Neopolis Metropolis',
-            action: onExitHouse,
-            x: s.x,
-            y: s.y - 35,
-          };
+        if (Math.hypot(px - (currentHouse.gridWidth - 1), py - (currentHouse.gridHeight - 1)) < 1.8) {
+          const s = isoToScreen(currentHouse.gridWidth - 1, currentHouse.gridHeight - 1, cameraRef.current, canvas.width, canvas.height);
+          foundPrompt = { text: '[E] Sair para Metropolis', action: pProps.onExitHouse, x: s.x, y: s.y - 35 };
         }
-
         currentHouse.placedFurniture.forEach(item => {
           const furnDef = FURNITURE_CATALOG.find(f => f.id === item.furnitureId);
-          if (!furnDef) return;
-
-          const cx = item.x + furnDef.width / 2;
-          const cy = item.y + furnDef.height / 2;
-          const dist = Math.hypot(playerIso.x - cx, playerIso.y - cy);
-
-          if (dist < 1.8) {
-            const s = isoToScreen(cx, cy, cameraRef.current, canvas.width, canvas.height);
-            if (furnDef.interactiveType === 'bed') {
-              foundPrompt = {
-                text: '[E] Dormir & Descansar (Recarrega 100% dos Nanites)',
-                action: onInteractBed,
-                x: s.x,
-                y: s.y - 30,
-              };
-            } else if (furnDef.interactiveType === 'arcade') {
-              foundPrompt = {
-                text: '[E] Jogar Neon Drift Arcade (-10⚡, +Credits)',
-                action: () => {
-                  if (onConsumeEnergy && !onConsumeEnergy(10, 'Arcade Game')) {
-                    addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                    sound.playChirp(0.6);
-                    return;
-                  }
-                  onInteractArcade();
-                },
-                x: s.x,
-                y: s.y - 45,
-              };
-            } else if (furnDef.interactiveType === 'terminal') {
-              foundPrompt = {
-                text: '[E] Terminal Bypass (-20⚡, +Credits)',
-                action: () => {
-                  if (onConsumeEnergy && !onConsumeEnergy(20, 'Terminal Bypass')) {
-                    addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                    sound.playChirp(0.6);
-                    return;
-                  }
-                  onInteractTerminal();
-                },
-                x: s.x,
-                y: s.y - 35,
-              };
-            } else if (furnDef.interactiveType === 'plant') {
-              foundPrompt = {
-                text: '[E] Cuidar das Plantas Hidropônicas (-10⚡, +Colheita)',
-                action: () => {
-                  if (onConsumeEnergy && !onConsumeEnergy(10, 'Cuidados Hidropônicos')) {
-                    addFloatingText('⚠️ NANITES ESGOTADOS! Descanse ou coma ramen!', '#ef4444');
-                    sound.playChirp(0.6);
-                    return;
-                  }
-                  onInteractPlant();
-                },
-                x: s.x,
-                y: s.y - 30,
-              };
-            }
+          if (furnDef && Math.hypot(px - (item.x + furnDef.width / 2), py - (item.y + furnDef.height / 2)) < 1.8) {
+            const s = isoToScreen(item.x + furnDef.width / 2, item.y + furnDef.height / 2, cameraRef.current, canvas.width, canvas.height);
+            if (furnDef.interactiveType === 'bed') foundPrompt = { text: '[E] Dormir & Descansar', action: pProps.onInteractBed, x: s.x, y: s.y - 30 };
+            else if (furnDef.interactiveType === 'arcade') foundPrompt = { text: '[E] Jogar Neon Drift', action: pProps.onInteractArcade, x: s.x, y: s.y - 45 };
+            else if (furnDef.interactiveType === 'terminal') foundPrompt = { text: '[E] Terminal Bypass', action: pProps.onInteractTerminal, x: s.x, y: s.y - 35 };
+            else if (furnDef.interactiveType === 'plant') foundPrompt = { text: '[E] Cuidar das Plantas', action: pProps.onInteractPlant, x: s.x, y: s.y - 30 };
           }
         });
       }
 
+      // THROTLE DO VIRTUAL DOM: O React SÓ é chamado se o texto do prompt mudar
+      if (foundPrompt?.text !== currentPromptRef.current?.text) {
+        currentPromptRef.current = foundPrompt;
+        setNearbyPrompt(foundPrompt);
+      } else if (!foundPrompt && currentPromptRef.current) {
+        currentPromptRef.current = null;
+        setNearbyPrompt(null);
+      }
 
-      setNearbyPrompt(foundPrompt);
+      // THROTLE DO VIRTUAL DOM: O HUD SÓ é chamado se cruzares blocos (Math.floor)
+      const currentFloorX = Math.floor(px);
+      const currentFloorY = Math.floor(py);
+      if (currentFloorX !== lastFloorCoordsRef.current.x || currentFloorY !== lastFloorCoordsRef.current.y) {
+        lastFloorCoordsRef.current = { x: currentFloorX, y: currentFloorY };
+        setUiCoords({ x: currentFloorX, y: currentFloorY });
+      }
 
       animId = requestAnimationFrame(gameLoop);
     };
 
     animId = requestAnimationFrame(gameLoop);
+    return () => cancelAnimationFrame(animId);
+  }, []);
 
-    return () => {
-      cancelAnimationFrame(animId);
-    };
-  }, [
-    gameState,
-    isDecorateMode,
-    selectedPlacedId,
-    selectedCatalogItem,
-    playerIso,
-    playerDir,
-    isMoving,
-    floatingTexts,
-    currentHouse,
-    onInteractNPC,
-    onInteractTerminal,
-    onInteractArcade,
-    onInteractBed,
-    onInteractPlant,
-    onInteractRepairBot,
-    onEnterHouse,
-    onExitHouse,
-    onInteractVendingMachine,
-    onOpenStoreTab,
-    onActionReward,
-    addFloatingText,
-  ]);
-
-  // Handle canvas resize
   useEffect(() => {
     const handleResize = () => {
       const canvas = canvasRef.current;
-      if (!canvas) return;
-      canvas.width = canvas.parentElement?.clientWidth || 800;
-      canvas.height = canvas.parentElement?.clientHeight || 600;
+      if (canvas && canvas.parentElement) {
+        canvas.width = canvas.parentElement.clientWidth || 800;
+        canvas.height = canvas.parentElement.clientHeight || 600;
+      }
     };
-
     handleResize();
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
-  // Handle Canvas Click or Tap for Movement / Decorate / Direct Interaction
   const handleCanvasClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const clickY = e.clientY - rect.top;
+    const iso = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
 
-    const iso = screenToIso(clickX, clickY, cameraRef.current, canvas.width, canvas.height);
-    const tileX = Math.floor(iso.x);
-    const tileY = Math.floor(iso.y);
-
-    if (isDecorateMode) {
-      if (selectedCatalogItem) {
-        onPlaceFurnitureAt(tileX, tileY);
+    if (props.isDecorateMode) {
+      const tileX = Math.floor(iso.x);
+      const tileY = Math.floor(iso.y);
+      if (props.selectedCatalogItem) {
+        props.onPlaceFurnitureAt(tileX, tileY);
       } else {
-        const clickedItem = currentHouse.placedFurniture.find(
-          item =>
-            tileX >= item.x &&
-            tileX < item.x + 2 &&
-            tileY >= item.y &&
-            tileY < item.y + 2
-        );
-        onSelectPlaced(clickedItem ? clickedItem.instanceId : null);
+        const currentHouse = props.gameState.houses.find(h => h.id === props.gameState.currentHouseId) || props.gameState.houses[0];
+        const clickedItem = currentHouse.placedFurniture.find(item => tileX >= item.x && tileX < item.x + 2 && tileY >= item.y && tileY < item.y + 2);
+        props.onSelectPlaced(clickedItem ? clickedItem.instanceId : null);
       }
     } else {
-      // Direct click on Vending Machines
-      if (gameState.currentScene === 'town') {
-        const vendingSpots = [
-          { x: 8, y: 11, category: 'drink' as const },
-          { x: 10, y: 41, category: 'snack' as const },
-          { x: 42, y: 39, category: 'all' as const },
-        ];
-        const clickedVend = vendingSpots.find(
-          v => Math.hypot(iso.x - v.x, iso.y - v.y) < 1.8
-        );
-        if (clickedVend) {
-          sound.playStep();
-          setPlayerIso({
-            x: clickedVend.x + 1,
-            y: clickedVend.y + 0.8,
-          });
-          onInteractVendingMachine(clickedVend.category);
-          return;
-        }
-      }
-
-      // Walk towards clicked tile
       sound.playStep();
-      setPlayerIso({
-        x: Math.max(1, Math.min(TOWN_SIZE - 2, iso.x)),
-        y: Math.max(1, Math.min(TOWN_SIZE - 2, iso.y)),
-      });
+      playerRef.current.x = Math.max(1, Math.min(TOWN_SIZE - 2, iso.x));
+      playerRef.current.y = Math.max(1, Math.min(TOWN_SIZE - 2, iso.y));
     }
   };
 
@@ -2460,145 +1058,57 @@ export const IsometricGameCanvas: React.FC<IsometricGameCanvasProps> = ({
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
-    const mx = e.clientX - rect.left;
-    const my = e.clientY - rect.top;
-
-    const iso = screenToIso(mx, my, cameraRef.current, canvas.width, canvas.height);
-    mouseIsoRef.current = iso;
+    mouseIsoRef.current = screenToIso(e.clientX - rect.left, e.clientY - rect.top, cameraRef.current, canvas.width, canvas.height);
   };
 
-  // Determine current District HUD label based on player coordinates
   const getCurrentDistrictBadge = () => {
-    if (gameState.currentScene === 'interior') {
-      const est = NPC_ESTABLISHMENTS[gameState.currentInteriorId || 'ramen_bistro'];
-      return {
-        badge: 'ESTABELECIMENTO',
-        name: (est?.name || 'INTERIOR ESPECIALIZADO').toUpperCase(),
-        color: 'text-pink-400 border-pink-500/40',
-      };
+    if (props.gameState.currentScene === 'interior') {
+      const est = NPC_ESTABLISHMENTS[props.gameState.currentInteriorId || 'ramen_bistro'];
+      return { badge: 'ESTABELECIMENTO', name: (est?.name || 'INTERIOR').toUpperCase(), color: 'text-pink-400 border-pink-500/40' };
     }
-    if (gameState.currentScene !== 'town') {
-      return {
-        badge: 'RESIDENCE',
-        name: currentHouse.name.toUpperCase(),
-        color: 'text-cyan-400 border-cyan-500/40',
-      };
+    if (props.gameState.currentScene !== 'town') {
+      const currentHouse = props.gameState.houses.find(h => h.id === props.gameState.currentHouseId) || props.gameState.houses[0];
+      return { badge: 'RESIDENCE', name: currentHouse.name.toUpperCase(), color: 'text-cyan-400 border-cyan-500/40' };
     }
 
-
-    const { x, y } = playerIso;
+    const { x, y } = uiCoords;
     const isHighway = (x >= 21 && x <= 24) || (y >= 21 && y <= 24);
 
-    if (isHighway) {
-      return {
-        badge: 'CENTRAL AXIS',
-        name: 'NEO-HIGHWAY & TRANSIT CORRIDOR',
-        color: 'text-amber-400 border-amber-500/40',
-      };
-    } else if (x < 21 && y < 21) {
-      return {
-        badge: 'DISTRICT 01',
-        name: 'NEON COMMERCIAL BOULEVARD',
-        color: 'text-cyan-400 border-cyan-500/40',
-      };
-    } else if (x > 24 && y < 21) {
-      return {
-        badge: 'DISTRICT 02',
-        name: 'NEO-AKADEMIA CAMPUS & LABS',
-        color: 'text-pink-400 border-pink-500/40',
-      };
-    } else if (x < 21 && y > 24) {
-      return {
-        badge: 'DISTRICT 03',
-        name: 'CAPSULE RESIDENTIAL SECTOR',
-        color: 'text-blue-400 border-blue-500/40',
-      };
-    } else {
-      return {
-        badge: 'DISTRICT 04',
-        name: 'CIVIC METRO & TRANSIT PLAZA',
-        color: 'text-purple-400 border-purple-500/40',
-      };
-    }
+    if (isHighway) return { badge: 'CENTRAL AXIS', name: 'NEO-HIGHWAY & TRANSIT CORRIDOR', color: 'text-amber-400 border-amber-500/40' };
+    if (x < 21 && y < 21) return { badge: 'DISTRICT 01', name: 'NEON COMMERCIAL BOULEVARD', color: 'text-cyan-400 border-cyan-500/40' };
+    if (x > 24 && y < 21) return { badge: 'DISTRICT 02', name: 'NEO-AKADEMIA CAMPUS & LABS', color: 'text-pink-400 border-pink-500/40' };
+    if (x < 21 && y > 24) return { badge: 'DISTRICT 03', name: 'CAPSULE RESIDENTIAL SECTOR', color: 'text-blue-400 border-blue-500/40' };
+    return { badge: 'DISTRICT 04', name: 'CIVIC METRO & TRANSIT PLAZA', color: 'text-purple-400 border-purple-500/40' };
   };
 
   const currentDistrict = getCurrentDistrictBadge();
 
   return (
     <div className="relative w-full h-full overflow-hidden select-none bg-slate-950">
-      <canvas
-        ref={canvasRef}
-        onClick={handleCanvasClick}
-        onMouseMove={handleMouseMove}
-        className="w-full h-full block pixelated cursor-crosshair"
-      />
+      <canvas ref={canvasRef} onClick={handleCanvasClick} onMouseMove={handleMouseMove} className="w-full h-full block pixelated cursor-crosshair" />
 
-      {/* Floating Interaction Prompt */}
-      {nearbyPrompt && !isDecorateMode && (
-        <div
-          style={{
-            left: `${nearbyPrompt.x}px`,
-            top: `${nearbyPrompt.y}px`,
-          }}
-          className="absolute -translate-x-1/2 -translate-y-full z-30 pointer-events-auto"
-        >
-          <button
-            onClick={nearbyPrompt.action}
-            className="px-3.5 py-1.5 bg-slate-950/95 border-2 border-cyan-400 rounded-xl text-cyan-200 text-xs font-bold font-pixel shadow-2xl shadow-cyan-500/40 hover:bg-cyan-950 hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer animate-bounce"
-          >
+      {nearbyPrompt && !props.isDecorateMode && (
+        <div style={{ left: `${nearbyPrompt.x}px`, top: `${nearbyPrompt.y}px` }} className="absolute -translate-x-1/2 -translate-y-full z-30 pointer-events-auto">
+          <button onClick={nearbyPrompt.action} className="px-3.5 py-1.5 bg-slate-950/95 border-2 border-cyan-400 rounded-xl text-cyan-200 text-xs font-bold font-pixel shadow-2xl shadow-cyan-500/40 hover:bg-cyan-950 hover:scale-105 transition-all flex items-center gap-1.5 cursor-pointer animate-bounce">
             <span>{nearbyPrompt.text}</span>
           </button>
         </div>
       )}
 
-      {/* District Location HUD Badge (Bottom-Left) */}
       <div className="absolute bottom-4 left-4 z-20 pointer-events-none hidden sm:flex items-center gap-2 px-3 py-1.5 bg-slate-950/85 backdrop-blur-md rounded-xl border border-slate-800 shadow-xl">
-        <span
-          className={`text-[9px] font-pixel px-1.5 py-0.5 rounded border ${currentDistrict.color} font-bold`}
-        >
-          {currentDistrict.badge}
-        </span>
-        <span className="text-xs font-bold font-cyber text-slate-200 tracking-wider">
-          {currentDistrict.name}
-        </span>
-        <span className="text-[10px] font-mono text-slate-500 ml-1">
-          [{Math.round(playerIso.x)}, {Math.round(playerIso.y)}]
-        </span>
+        <span className={`text-[9px] font-pixel px-1.5 py-0.5 rounded border ${currentDistrict.color} font-bold`}>{currentDistrict.badge}</span>
+        <span className="text-xs font-bold font-cyber text-slate-200 tracking-wider">{currentDistrict.name}</span>
+        <span className="text-[10px] font-mono text-slate-500 ml-1">[{uiCoords.x}, {uiCoords.y}]</span>
       </div>
 
-      {/* Touch / Click virtual on-screen controls for mobile or casual play */}
-      <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1 sm:hidden">
+      <div className="absolute bottom-4 left-4 z-20 flex flex-col gap-1 sm:hidden pointer-events-auto">
         <div className="flex justify-center">
-          <button
-            onPointerDown={() => keysPressed.current.add('w')}
-            onPointerUp={() => keysPressed.current.delete('w')}
-            className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg"
-          >
-            ▲
-          </button>
+          <button onPointerDown={() => keysPressed.current.add('w')} onPointerUp={() => keysPressed.current.delete('w')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▲</button>
         </div>
         <div className="flex gap-2">
-          <button
-            onPointerDown={() => keysPressed.current.add('a')}
-            onPointerUp={() => keysPressed.current.delete('a')}
-            className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg"
-          >
-            ◄
-          </button>
-          <button
-            onPointerDown={() => keysPressed.current.add('s')}
-            onPointerUp={() => keysPressed.current.delete('s')}
-            className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg"
-          >
-            ▼
-          </button>
-          <button
-            onPointerDown={() => keysPressed.current.add('d')}
-            onPointerUp={() => keysPressed.current.delete('d')}
-            className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg"
-          >
-            ►
-          </button>
+          <button onPointerDown={() => keysPressed.current.add('a')} onPointerUp={() => keysPressed.current.delete('a')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">◄</button>
+          <button onPointerDown={() => keysPressed.current.add('s')} onPointerUp={() => keysPressed.current.delete('s')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">▼</button>
+          <button onPointerDown={() => keysPressed.current.add('d')} onPointerUp={() => keysPressed.current.delete('d')} className="w-12 h-12 bg-slate-900/80 border border-cyan-500 text-cyan-300 font-bold rounded-xl active:bg-cyan-500 active:text-black flex items-center justify-center text-lg">►</button>
         </div>
       </div>
     </div>
