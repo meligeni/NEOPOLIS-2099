@@ -1,0 +1,6 @@
+{
+  "name": "NEOPOLIS: Cyberpunk Life Sim",
+  "description": "An isometric pixel-art cyberpunk life sim inspired by Witchbrook. Create your runner, complete quests, hack terminals, earn credits, purchase cosmetics, and furnish your neon apartment.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
